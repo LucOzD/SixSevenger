@@ -1,0 +1,508 @@
+/* GLOBAL */
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: #f5f5f5;
+}
+
+html, body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+
+/* NAVBAR */
+.navbar {
+  width: 100%;
+  background: white;
+  border-bottom: 1px solid #ddd;
+  padding: 8px 10px;          /* smaller padding */
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;            /* allow wrapping on small screens */
+  box-sizing: border-box;
+}
+
+.nav-right button {
+  margin-left: 6px;
+  padding: 4px 8px;           /* smaller buttons */
+  font-size: 13px;
+}
+
+.logo {
+  font-size: 20px;
+  font-weight: bold;
+}
+
+
+.nav-right button:hover {
+  background: #ddd;
+}
+
+/* MAIN CONTAINER */
+.container {
+  max-width: 600px;
+  width: 100%;
+  padding: 0 10px;
+  margin: 20px auto;
+}
+
+
+/* INPUT BOX */
+.post-box {
+  background: white;
+  padding: 15px;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  margin-bottom: 20px;
+}
+
+input, textarea {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 15px;
+  box-sizing: border-box;
+}
+
+/* MESSAGE CARDS */
+.msg-card {
+  background: white;
+  padding: 15px;
+  border-radius: 8px;
+  margin-bottom: 15px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.msg-user {
+  font-weight: bold;
+  margin-bottom: 6px;
+}
+
+.msg-text {
+  font-size: 15px;
+}
+
+/* FORMS */
+.form-container {
+  max-width: 400px;
+  margin: 40px auto;
+  background: white;
+  padding: 25px;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.form-container h2 {
+  margin-top: 0;
+}
+
+button.submit-btn {
+  width: 100%;
+  padding: 10px;
+  background: #4a8af4;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-top: 10px;
+}
+
+button.submit-btn:hover {
+  background: #3a6fd1;
+}
+
+/* PROFILE PAGE */
+.profile-card {
+  max-width: 400px;
+  margin: 40px auto;
+  background: white;
+  padding: 25px;
+  border-radius: 8px;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.profile-card img {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  object-fit: cover;
+  margin-bottom: 15px;
+}
+
+.profile-card h2 {
+  margin: 0;
+}
+
+.profile-card p {
+  color: #555;
+}
+
+/* 404 PAGE */
+.error-box {
+  text-align: center;
+  margin-top: 80px;
+  font-size: 22px;
+  color: #444;
+}
+
+.global-post {
+  background: white;
+  padding: 15px;
+  border-radius: 8px;
+  margin-bottom: 15px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.global-post-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.global-post-header img {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+  margin-right: 10px;
+}
+
+.global-post-username {
+  font-weight: bold;
+  font-size: 15px;
+}
+
+.global-post-text {
+  font-size: 15px;
+}
+
+.post-actions {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin-top:10px;
+}
+
+.post-actions button {
+  background:transparent;
+  border:none;
+  cursor:pointer;
+  font-size:16px;
+}
+
+.post-actions button.active {
+  color: #007bff;
+  font-weight:700;
+}
+
+.comments-section {
+  margin-top:10px;
+  border-top:1px solid #eee;
+  padding-top:10px;
+}
+
+.comments-list .comment {
+  display:flex;
+  gap:8px;
+  align-items:flex-start;
+  margin-bottom:8px;
+}
+
+.comments-list .comment img {
+  width:28px;
+  height:28px;
+  border-radius:50%;
+  object-fit:cover;
+}
+
+.comment-form {
+  display:flex;
+  gap:8px;
+  margin-top:8px;
+}
+
+.comment-input {
+  flex:1;
+  padding:8px;
+  border-radius:6px;
+  border:1px solid #ddd;
+}
+
+.follow-list-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin: 24px 0;
+}
+
+.follow-list-card {
+  background: white;
+  border: 1px solid #eee;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.follow-list-card h3 {
+  margin-top: 0;
+}
+
+.follow-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.follow-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #fafafa;
+  border: 1px solid #eee;
+  border-radius: 10px;
+  padding: 10px 12px;
+  gap: 10px;
+}
+
+.follow-list-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.follow-list-user img {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.unfollow-btn {
+  padding: 6px 12px;
+  border: none;
+  background: #ff4d4f;
+  color: white;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.unfollow-btn:hover {
+  background: #d83b3b;
+}
+
+.notification-dismiss-btn {
+  background: transparent;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.notification-dismiss-btn:hover {
+  color: #000;
+}
+
+/* Notification widgets */
+#notificationWidget {
+  position: fixed;
+  top: 70px;
+  right: 10px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.notification-toggle {
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 999px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.notification-badge {
+  background: #ff4d4f;
+  color: white;
+  border-radius: 50%;
+  min-width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  padding: 0 5px;
+}
+
+.notification-panel {
+  width: 320px;
+  max-height: 420px;
+  overflow: hidden;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 12px;
+  box-shadow: 0 12px 28px rgba(0,0,0,0.12);
+}
+
+.notification-panel.hidden {
+  display: none;
+}
+
+.notification-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid #eee;
+  font-weight: bold;
+}
+
+.mark-read-btn {
+  background: transparent;
+  border: none;
+  color: #007bff;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.notification-list {
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.notification-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f0f0f0;
+  cursor: pointer;
+}
+
+.notification-item:last-child {
+  border-bottom: none;
+}
+
+.notification-item.unread {
+  background: #f6fbff;
+}
+
+.post-view-card {
+  background: white;
+  padding: 20px;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  margin-bottom: 20px;
+}
+
+.comment-item {
+  background: white;
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid #eee;
+  margin-bottom: 12px;
+}
+
+.comment-highlight {
+  border-color: #4a8af4;
+  background: #eef5ff;
+}
+
+.notification-item-text {
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.notification-item-meta {
+  font-size: 12px;
+  color: #888;
+}
+
+.notification-empty {
+  padding: 16px;
+  color: #666;
+}
+
+.notification-toast {
+  min-width: 240px;
+  background: rgba(0,0,0,0.9);
+  color: white;
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  position: fixed;
+  top: 70px;
+  right: 10px;
+  z-index: 1100;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+}
+
+.notification-toast.hidden {
+  display: none;
+}
+
+.notification-close-btn {
+  border: none;
+  background: transparent;
+  color: white;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.follow-info {
+  margin-top: 10px;
+  color: #555;
+  font-size: 14px;
+}
+
+.follow-requests {
+  margin-top: 20px;
+}
+
+.follow-request-item {
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.follow-request-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.follow-request-user img {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.follow-request-item button {
+  padding: 8px 12px;
+  border: none;
+  background: #4a8af4;
+  color: white;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.follow-request-item button[disabled] {
+  background: #999;
+  cursor: default;
+}
+

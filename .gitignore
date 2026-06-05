@@ -1,0 +1,6 @@
+node_modules/
+database.db
+recommender_state.pkl
+__pycache__/
+*.pyc
+.env
