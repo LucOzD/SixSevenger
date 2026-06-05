@@ -118,11 +118,11 @@ class PostAnalyser:
     Each category = a cluster centroid (average position of its posts).
     """
 
-    def __init__(self, n_categories=30, min_posts_before_cluster=100):
+    def __init__(self, n_categories=30, min_posts_before_cluster=50):
         self.vectorizer = TfidfVectorizer(
             max_features=5000,
             stop_words='english',
-            min_df=2,
+            min_df=1,
             ngram_range=(1, 2),
             strip_accents='unicode',
             sublinear_tf=True,

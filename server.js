@@ -812,6 +812,96 @@ app.get("/me", (req, res) => {
 
 
 // ---------------------------------------------------------
+// ADMIN MIDDLEWARE
+// ---------------------------------------------------------
+function requireAdmin(req, res, next) {
+  if (!req.user || req.user.username !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
+}
+
+// ---------------------------------------------------------
+// ADMIN: Get user's category interests (likes/dislikes breakdown)
+// ---------------------------------------------------------
+app.get('/admin/user/:id/interests', requireAdmin, async (req, res) => {
+  const userId = req.params.id;
+  const user = db().prepare('SELECT id, username FROM users WHERE id = ?').get(userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const interests = db().prepare(`
+    SELECT category_id, score FROM user_interests
+    WHERE userId = ?
+    ORDER BY score DESC
+  `).all(userId);
+
+  // Get category descriptions from Python service
+  let categoryInfo = {};
+  try {
+    const catRes = await fetch(`${RECOMMENDER_URL}/categories`);
+    categoryInfo = await catRes.json();
+  } catch (_) {}
+
+  const enriched = interests.map(i => ({
+    category_id: i.category_id,
+    score: i.score,
+    words: categoryInfo[String(i.category_id)]?.words || [],
+    description: categoryInfo[String(i.category_id)]?.description || `category_${i.category_id}`,
+  }));
+
+  // Also get their posts with categories
+  const posts = db().prepare(`
+    SELECT id, text, category_id FROM posts
+    WHERE userId = ? AND deleted = 0
+    ORDER BY timestamp DESC
+  `).all(userId);
+
+  res.json({ user, interests: enriched, posts });
+});
+
+// ---------------------------------------------------------
+// ADMIN: Get all categories overview
+// ---------------------------------------------------------
+app.get('/admin/categories', requireAdmin, async (req, res) => {
+  let categoryInfo = {};
+  try {
+    const catRes = await fetch(`${RECOMMENDER_URL}/categories`);
+    categoryInfo = await catRes.json();
+  } catch (_) {
+    // If recommender is down, build from DB
+    const cats = db().prepare(`
+      SELECT category_id, COUNT(*) AS count FROM posts
+      WHERE deleted = 0 AND category_id != -1
+      GROUP BY category_id
+      ORDER BY count DESC
+    `).all();
+    cats.forEach(c => {
+      categoryInfo[String(c.category_id)] = { post_count: c.count, words: [], description: `category_${c.category_id}` };
+    });
+  }
+  res.json(categoryInfo);
+});
+
+// ---------------------------------------------------------
+// ADMIN: List all users (for admin panel)
+// ---------------------------------------------------------
+app.get('/admin/users', requireAdmin, (req, res) => {
+  const users = db().prepare(`
+    SELECT id, username, profilePic, guest, created FROM users
+    WHERE guest = 0
+    ORDER BY username
+  `).all();
+  res.json(users);
+});
+
+// ---------------------------------------------------------
+// ADMIN PAGES
+// ---------------------------------------------------------
+app.get('/admin', requireAdmin, (req, res) => res.render('admin', { user: req.user }));
+app.get('/admin/user-view', requireAdmin, (req, res) => res.render('admin-user', { user: req.user }));
+app.get('/admin/categories-view', requireAdmin, (req, res) => res.render('admin-categories', { user: req.user }));
+
+// ---------------------------------------------------------
 // RENDER PAGES USING EJS
 // ---------------------------------------------------------
 app.get('/', (req, res) => res.render('index', { user: req.user }));
@@ -840,10 +930,77 @@ app.use('/profile_pics', express.static(picsFolder));
 app.use((req, res) => res.status(404).render('404'));
 
 // ---------------------------------------------------------
+// CATEGORISE ALL UNCATEGORISED POSTS ON STARTUP
+// Waits for the Python recommender to be available, then
+// feeds all posts with category_id = -1 through it.
+// ---------------------------------------------------------
+async function categoriseBacklog() {
+  // Wait up to 15 seconds for the recommender to come online
+  let ready = false;
+  for (let i = 0; i < 30; i++) {
+    try {
+      const res = await fetch(`${RECOMMENDER_URL}/categories`);
+      if (res.ok) { ready = true; break; }
+    } catch (_) {}
+    await new Promise(r => setTimeout(r, 500));
+  }
+
+  if (!ready) {
+    console.log('[categorise-backlog] Recommender not available, skipping backlog.');
+    return;
+  }
+
+  const uncategorised = db().prepare(`
+    SELECT id, text FROM posts
+    WHERE category_id = -1 AND deleted = 0
+    ORDER BY timestamp ASC
+  `).all();
+
+  if (uncategorised.length === 0) return;
+  console.log(`[categorise-backlog] Feeding ${uncategorised.length} posts to recommender...`);
+
+  for (const post of uncategorised) {
+    try {
+      const res = await fetch(`${RECOMMENDER_URL}/categorise`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ post_id: post.id, text: post.text }),
+      });
+      const data = await res.json();
+      if (data.category_id !== undefined && data.category_id !== -1) {
+        db().prepare(`UPDATE posts SET category_id = ?, post_vector = ? WHERE id = ?`)
+          .run(
+            data.category_id,
+            data.post_vector ? JSON.stringify(data.post_vector) : null,
+            post.id
+          );
+      }
+    } catch (_) {
+      break; // recommender died, stop trying
+    }
+  }
+
+  const remaining = db().prepare(`SELECT COUNT(*) AS c FROM posts WHERE category_id = -1 AND deleted = 0`).get().c;
+  const done = uncategorised.length - remaining;
+  console.log(`[categorise-backlog] Done. Categorised ${done} posts, ${remaining} still pending (need more posts to fit model).`);
+}
+
+// ---------------------------------------------------------
+// ADMIN: Trigger recategorisation manually
+// ---------------------------------------------------------
+app.post('/admin/recategorise', requireAdmin, async (req, res) => {
+  categoriseBacklog();
+  res.json({ success: true, message: 'Recategorisation started in background' });
+});
+
+// ---------------------------------------------------------
 // Start server with database initialization
 (async () => {
   await initDb();
   app.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
   });
+
+  // Categorise backlog after server starts
+  categoriseBacklog();
 })();
