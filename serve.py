@@ -31,14 +31,15 @@ def categorise():
 
     cat_id, post_vec = analyser.add_post(post_id, text)
 
-    if len(analyser.pending_posts) % 50 == 0:
+    # Persist periodically so newly discovered categories survive a restart
+    if analyser._post_count % 25 == 0:
         analyser.save(STATE)
 
     return jsonify({
         'category_id':    cat_id,
-        'post_vector':    post_vec,           # stored in SQLite for post-to-post similarity
+        'post_vector':    post_vec,           # sparse vector, stored in SQLite
         'category_words': analyser.category_words.get(cat_id, []),
-        'status':         'buffering' if cat_id == -1 else 'ok',
+        'status':         'ok',
     })
 
 
@@ -102,7 +103,7 @@ def categories():
                 {
                     'category':    int(sim_id),
                     'similarity':  round(sim_score, 3),
-                    'differs_by':  analyser.topology.diff_dims.get((cat_id, sim_id), []),
+                    'differs_by':  analyser.distinctive_words(cat_id, sim_id),
                 }
                 for sim_id, sim_score in similar
             ],
@@ -138,7 +139,6 @@ def similar_posts():
 if __name__ == '__main__':
     print(f'Recommender running on http://localhost:5001')
     print(f'State: {"loaded" if os.path.exists(STATE) else "fresh start"}')
-    print(f'Posts buffered: {len(analyser.pending_posts)} / {analyser.min_posts} needed to fit')
-    print(f'Model fitted:   {analyser.is_fitted}')
-    print(f'Categories:     {len(analyser.category_words)}')
+    print(f'Categories discovered: {analyser.num_categories}')
+    print(f'Similarity threshold:  {analyser.similarity_threshold}')
     app.run(port=5001)

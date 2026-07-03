@@ -1,6 +1,10 @@
 # recommender.py
-# Posts as points in N-dimensional TF-IDF vector space.
-# Categories discovered via clustering on that space.
+# Posts as points in a fixed-dimensional hashed vector space.
+# Categories are discovered DYNAMICALLY via online threshold clustering:
+# each new post either joins the most similar existing category, or — if it
+# is not similar enough to any of them — spawns a brand new category.
+# Nothing about the number or identity of categories is hard-coded; they
+# grow organically as new kinds of posts appear.
 # Category topology: knows which categories are similar and HOW they differ.
 # User profiling: builds interest vector from interactions, then finds
 # not just liked categories but similar ones weighted by relevance.
@@ -9,10 +13,8 @@ import re
 import pickle
 import os
 import numpy as np
-from collections import defaultdict
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.cluster import MiniBatchKMeans
-from sklearn.preprocessing import normalize
+from collections import defaultdict, Counter
+from sklearn.feature_extraction.text import HashingVectorizer, ENGLISH_STOP_WORDS
 
 
 class CategoryTopology:
@@ -111,37 +113,44 @@ class CategoryTopology:
 
 class PostAnalyser:
     """
-    Embeds posts into TF-IDF vector space and clusters them into
-    dynamically discovered categories.
+    Embeds posts into a fixed-dimensional hashed vector space and assigns
+    them to DYNAMICALLY discovered categories.
 
-    Each post = a point in vocabulary-dimensional space.
-    Each category = a cluster centroid (average position of its posts).
+    There is no fixed number of categories. Clustering is done online with
+    a similarity threshold (a "leader" / nearest-centroid scheme):
+
+      - Vectorise the post.
+      - Find the existing category whose centroid is most similar (cosine).
+      - If that similarity clears `similarity_threshold`, the post joins
+        that category and nudges its centroid.
+      - Otherwise the post is different enough to be its own thing, so a
+        brand new category is created on the spot.
+
+    As new topics appear in the data, new categories appear automatically.
+    A HashingVectorizer is used (instead of TF-IDF) so the vector space
+    never needs re-fitting and unseen words are handled gracefully.
     """
 
-    def __init__(self, n_categories=30, min_posts_before_cluster=50):
-        self.vectorizer = TfidfVectorizer(
-            max_features=5000,
+    def __init__(self, similarity_threshold=0.18, n_features=4096,
+                 rebuild_every=25):
+        self.n_features = n_features
+        self.vectorizer = HashingVectorizer(
+            n_features=n_features,
             stop_words='english',
-            min_df=1,
             ngram_range=(1, 2),
-            strip_accents='unicode',
-            sublinear_tf=True,
+            alternate_sign=False,
+            norm='l2',
         )
-        self.clusterer = MiniBatchKMeans(
-            n_clusters=n_categories,
-            batch_size=100,
-            n_init=3,
-            random_state=42,
-        )
-        self.n_categories   = n_categories
-        self.is_fitted      = False
-        self.pending_posts  = []
-        self.min_posts      = min_posts_before_cluster
-        self.category_words = {}
-        self.topology       = CategoryTopology()
-        self._post_count    = 0
-        self._feature_names = None
+        self.similarity_threshold = similarity_threshold
+        self.rebuild_every        = rebuild_every
 
+        self.topology       = CategoryTopology()   # owns the centroids
+        self.category_words  = {}                   # cat_id -> [top words]
+        self._word_counts    = defaultdict(Counter) # cat_id -> word frequencies
+        self._next_id        = 0
+        self._post_count     = 0
+
+    # ------------------------------------------------------------------
     def _clean(self, text):
         text = text.lower()
         text = re.sub(r'http\S+', '', text)
@@ -149,63 +158,101 @@ class PostAnalyser:
         text = re.sub(r'[^a-z0-9#\s]', ' ', text)
         return text.strip()
 
+    def _vectorize(self, cleaned):
+        sparse = self.vectorizer.transform([cleaned])
+        dense  = np.asarray(sparse.todense()).flatten()
+        sparse_dict = {int(i): float(v) for i, v in zip(sparse.indices, sparse.data)}
+        return dense, sparse_dict
+
+    def _nearest_category(self, dense):
+        """Return (cat_id, cosine_similarity) of the closest centroid."""
+        best_cat, best_sim = None, -1.0
+        dn = np.linalg.norm(dense)
+        if dn == 0:
+            return None, -1.0
+        for cat_id, centroid in self.topology.centroids.items():
+            cn = np.linalg.norm(centroid)
+            if cn == 0:
+                continue
+            sim = float(np.dot(dense, centroid) / (dn * cn))
+            if sim > best_sim:
+                best_sim, best_cat = sim, cat_id
+        return best_cat, best_sim
+
+    # ------------------------------------------------------------------
     def add_post(self, post_id, text):
         """
-        Embed post, assign category, update topology.
-        Returns (category_id, dense_vector_list).
-        Returns (-1, None) while still buffering.
+        Embed the post, assign it to an existing category or create a new
+        one, update the topology and category vocabulary.
+        Returns (category_id, sparse_vector_dict).
         """
         cleaned = self._clean(text)
-        self.pending_posts.append((post_id, cleaned))
+        dense, sparse_dict = self._vectorize(cleaned)
 
-        if not self.is_fitted and len(self.pending_posts) < self.min_posts:
-            return -1, None
+        best_cat, best_sim = self._nearest_category(dense)
 
-        if not self.is_fitted:
-            texts  = [p[1] for p in self.pending_posts]
-            vecs   = self.vectorizer.fit_transform(texts)
-            self._feature_names = self.vectorizer.get_feature_names_out()
-            vecs_n = normalize(vecs)
-            self.clusterer.partial_fit(vecs_n)
-            self.is_fitted = True
-            self._update_category_words()
+        if best_cat is None or best_sim < self.similarity_threshold:
+            # Too different from everything we've seen — new category.
+            cat_id = self._next_id
+            self._next_id += 1
+        else:
+            cat_id = best_cat
 
-            cats = self.clusterer.predict(vecs_n)
-            for i, cat_id in enumerate(cats):
-                dense = np.asarray(vecs_n[i].todense()).flatten()
-                self.topology.update(int(cat_id), dense)
-            self.topology.rebuild_relations(self._feature_names)
-
-            last_cat = int(cats[-1])
-            last_vec = np.asarray(vecs_n[-1].todense()).flatten()
-            return last_cat, last_vec.tolist()
-
-        vec   = self.vectorizer.transform([cleaned])
-        vec_n = normalize(vec)
-        self.clusterer.partial_fit(vec_n)
-        self._update_category_words()
-
-        cat_id = int(self.clusterer.predict(vec_n)[0])
-        dense  = np.asarray(vec_n.todense()).flatten()
-
+        # Online update of the category centroid + post count
         self.topology.update(cat_id, dense)
+        self._learn_words(cat_id, cleaned)
 
         self._post_count += 1
-        if self._post_count % 50 == 0:
-            self.topology.rebuild_relations(self._feature_names)
+        if self._post_count % self.rebuild_every == 0:
+            self.topology.rebuild_relations(None)
 
-        return cat_id, dense.tolist()
+        return cat_id, sparse_dict
 
-    def _update_category_words(self):
-        names   = self.vectorizer.get_feature_names_out()
-        centers = self.clusterer.cluster_centers_
-        for cat_id, center in enumerate(centers):
-            top_idx = center.argsort()[-10:][::-1]
-            self.category_words[cat_id] = [names[i] for i in top_idx]
+    # ------------------------------------------------------------------
+    def _learn_words(self, cat_id, cleaned):
+        counts = self._word_counts[cat_id]
+        for w in cleaned.split():
+            if len(w) > 1 and w not in ENGLISH_STOP_WORDS:
+                counts[w] += 1
+        self.category_words[cat_id] = [w for w, _ in counts.most_common(10)]
 
     def describe(self, cat_id):
         words = self.category_words.get(int(cat_id), [])
         return ', '.join(words) if words else f'category_{cat_id}'
+
+    def distinctive_words(self, cat_a, cat_b, n=6):
+        """Words common in cat_a but not prominent in cat_b."""
+        a_words = self.category_words.get(int(cat_a), [])
+        b_words = set(self.category_words.get(int(cat_b), []))
+        return [w for w in a_words if w not in b_words][:n]
+
+    @property
+    def num_categories(self):
+        return len(self.topology.centroids)
+
+    def get_similar_posts(self, post_vec, candidates, top_n=10):
+        """
+        post_vec and each candidate may be either a dense list or a
+        sparse {index: value} dict. Returns [(post_id, similarity), ...].
+        """
+        def to_dense(v):
+            if isinstance(v, dict):
+                arr = np.zeros(self.n_features)
+                for i, val in v.items():
+                    arr[int(i)] = val
+                return arr
+            return np.array(v)
+
+        target = to_dense(post_vec)
+        tn = np.linalg.norm(target)
+        results = []
+        for pid, cand in candidates.items():
+            c = to_dense(cand)
+            cn = np.linalg.norm(c)
+            sim = float(np.dot(target, c) / (tn * cn)) if tn > 0 and cn > 0 else 0.0
+            results.append((pid, sim))
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:top_n]
 
     def save(self, path='recommender_state.pkl'):
         with open(path, 'wb') as f:
