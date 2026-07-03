@@ -307,6 +307,60 @@ class UserProfiler:
 
         return sorted(scores.items(), key=lambda x: x[1], reverse=True)[:n]
 
+    def rank_from_scores(self, direct_scores, topology, n=30):
+        """
+        Stateless ranking. Given a map of {category_id: score} computed
+        fresh from the database (posts authored + likes - dislikes +
+        comments), apply the same topology boosting, dislike penalties
+        and directional alignment as get_ranked_categories — but without
+        relying on any in-memory profile. This lets the feed recompute
+        recommendations from scratch on every page load.
+        """
+        direct = {int(k): float(v) for k, v in direct_scores.items()}
+        all_cats = set(topology.centroids.keys()) | set(direct.keys())
+        scores = {cat: direct.get(cat, 0.01) for cat in all_cats}
+
+        # Build the user's aggregate interest / dislike directions from
+        # the category centroids weighted by their direct scores.
+        interest = None
+        for cat, sc in direct.items():
+            centroid = topology.centroids.get(cat)
+            if centroid is None:
+                continue
+            vec = np.array(centroid) * sc
+            interest = vec if interest is None else interest + vec
+
+        # Boost categories similar to liked ones
+        for liked_cat, liked_score in direct.items():
+            if liked_score <= 0:
+                continue
+            for sim_cat, sim_score in topology.get_similar_categories(liked_cat, n=5):
+                scores[sim_cat] = scores.get(sim_cat, 0.01) + liked_score * sim_score * 0.5
+
+        # Penalise categories similar to disliked ones
+        for disliked_cat, disliked_score in direct.items():
+            if disliked_score >= 0:
+                continue
+            for sim_cat, sim_score in topology.get_similar_categories(disliked_cat, n=5):
+                penalty = abs(disliked_score) * sim_score * 0.4
+                scores[sim_cat] = scores.get(sim_cat, 0.01) - penalty
+
+        # Directional alignment against the user's overall taste vector
+        if interest is not None:
+            int_norm = np.linalg.norm(interest)
+            if int_norm > 0:
+                interest_n = interest / int_norm
+                for cat_id, centroid in topology.centroids.items():
+                    c = np.array(centroid)
+                    c_norm = np.linalg.norm(c)
+                    if c_norm > 0:
+                        alignment = float(np.dot(interest_n, c / c_norm))
+                        # keep the sign of the existing score, scale magnitude
+                        factor = max(0.05, (alignment + 1) / 2)
+                        scores[cat_id] = scores.get(cat_id, 0.01) * factor
+
+        return sorted(scores.items(), key=lambda x: x[1], reverse=True)[:n]
+
     def decay_all(self, factor=0.97):
         for uid in self.profiles:
             for cat in self.profiles[uid]:

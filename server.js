@@ -21,7 +21,23 @@ function db() {
 // ---------------------------------------------------------
 const RECOMMENDER_URL = 'http://localhost:5001';
 
-async function categorisePost(postId, text) {
+// Weight given to a category when a user authors a post in it.
+// Posting about something is a strong signal of interest.
+const POST_INTEREST_WEIGHT = 0.15;
+
+// Record a category-interest signal for a user directly in SQLite.
+// Scores are allowed to go negative so disliked topics get suppressed.
+function recordCategoryScore(userId, categoryId, delta) {
+  if (categoryId === undefined || categoryId === -1) return;
+  db().prepare(`
+    INSERT INTO user_interests (userId, category_id, score)
+    VALUES (?, ?, ?)
+    ON CONFLICT(userId, category_id) DO UPDATE SET
+      score = score + excluded.score
+  `).run(userId, categoryId, delta);
+}
+
+async function categorisePost(postId, text, authorId) {
   try {
     const res = await fetch(`${RECOMMENDER_URL}/categorise`, {
       method: 'POST',
@@ -36,6 +52,11 @@ async function categorisePost(postId, text) {
           data.post_vector ? JSON.stringify(data.post_vector) : null,
           postId
         );
+
+      // A user's own posts inform their category interests
+      if (authorId) {
+        recordCategoryScore(authorId, data.category_id, POST_INTEREST_WEIGHT);
+      }
     }
   } catch (_) {
     // Recommender not running — post saved, just unranked
@@ -51,36 +72,36 @@ async function recordInteraction(userId, postId, signal) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_id: userId, category_id: post.category_id, signal }),
     });
-    // Mirror score in SQLite for fast feed queries
-    const WEIGHTS = { like: 0.10, dislike: -0.06, comment: 0.07, save: 0.15, view: 0.02 };
+    // Mirror score in SQLite for fast feed queries.
+    // Dislikes are weighted strongly negative so hated topics drop out
+    // of the feed. Scores are allowed to go negative.
+    const WEIGHTS = { like: 0.20, dislike: -0.25, comment: 0.12, save: 0.25, view: 0.02 };
     const delta = WEIGHTS[signal] || 0;
-    db().prepare(`
-      INSERT INTO user_interests (userId, category_id, score)
-      VALUES (?, ?, ?)
-      ON CONFLICT(userId, category_id) DO UPDATE SET
-        score = MAX(0, score + excluded.score)
-    `).run(userId, post.category_id, delta);
+    recordCategoryScore(userId, post.category_id, delta);
   } catch (_) {}
 }
 
-// Fetch personalised category scores from the Python service.
-// Falls back to direct SQLite scores if Python is down.
+// Fetch personalised category scores. Recomputed fresh from the database
+// on every call (i.e. every page refresh) from the user's own posts,
+// likes, dislikes and comments — then enhanced with topology awareness by
+// the Python service. Falls back to raw SQLite scores if Python is down.
 async function getRankedCategoryScores(userId) {
+  const rows = db().prepare(
+    `SELECT category_id, score FROM user_interests WHERE userId = ?`
+  ).all(userId);
+  const direct = Object.fromEntries(rows.map(r => [r.category_id, r.score]));
+
   try {
     const res = await fetch(`${RECOMMENDER_URL}/ranked-categories`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId }),
+      body: JSON.stringify({ user_id: userId, direct_scores: direct }),
     });
     const data = await res.json();
-    // Returns {category_id: score} map
     return Object.fromEntries(data.ranked.map(([c, s]) => [c, s]));
   } catch (_) {
     // Fallback: use raw SQLite scores without topology boost
-    const rows = db().prepare(
-      `SELECT category_id, score FROM user_interests WHERE userId = ?`
-    ).all(userId);
-    return Object.fromEntries(rows.map(r => [r.category_id, r.score]));
+    return direct;
   }
 }
 
@@ -283,8 +304,9 @@ app.post("/save-message", (req, res) => {
     VALUES (?, ?, ?, ?)\
   `).run(id, req.user.id, text, timestamp);
 
-  // Categorise in background — doesn't block the response
-  categorisePost(id, text);
+  // Categorise in background — doesn't block the response.
+  // Author is passed so the post feeds their own interest profile.
+  categorisePost(id, text, req.user.id);
 
   res.json({ success: true, id, timestamp });
 });
@@ -383,7 +405,9 @@ function updateSpamScore(postId) {
 app.get("/global-feed", async (req, res) => {
   const limit  = parseInt(req.query.limit)  || 20;
   const offset = parseInt(req.query.offset) || 0;
-  const pool   = limit * 3;
+  // Rank over a wide pool so relevant posts aren't missed just because
+  // they aren't the most recent. Keeps recommendations meaningful.
+  const pool   = Math.max(limit * 10, 200);
 
   // Topology-aware scores from Python (falls back to raw SQLite if down)
   const categoryScores = await getRankedCategoryScores(req.user.id);
@@ -951,7 +975,7 @@ async function categoriseBacklog() {
   }
 
   const uncategorised = db().prepare(`
-    SELECT id, text FROM posts
+    SELECT id, text, userId FROM posts
     WHERE category_id = -1 AND deleted = 0
     ORDER BY timestamp ASC
   `).all();
@@ -974,6 +998,10 @@ async function categoriseBacklog() {
             data.post_vector ? JSON.stringify(data.post_vector) : null,
             post.id
           );
+        // Seed the author's interest from their own post
+        if (post.userId) {
+          recordCategoryScore(post.userId, data.category_id, POST_INTEREST_WEIGHT);
+        }
       }
     } catch (_) {
       break; // recommender died, stop trying

@@ -49,6 +49,18 @@ class DbWrapper {
   }
 }
 
+// Add any missing columns to an existing table.
+// definitions = { columnName: 'TYPE DEFAULT ...' }
+function migrateColumns(db, table, definitions) {
+  const existing = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+  for (const [name, type] of Object.entries(definitions)) {
+    if (!existing.includes(name)) {
+      db.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`).run();
+      console.log(`[migration] Added column ${table}.${name}`);
+    }
+  }
+}
+
 // Initialize database
 async function initDb() {
   const SQL = await initSqlJs();
@@ -89,6 +101,16 @@ async function initDb() {
       FOREIGN KEY(userId) REFERENCES users(id)
     )
   `).run();
+
+  // Migrations: add columns that may be missing on databases created
+  // before these fields existed. Errors (column already exists) are
+  // safely ignored by the wrapper's run().
+  migrateColumns(db, 'posts', {
+    deleted:     'INTEGER DEFAULT 0',
+    category_id: 'INTEGER DEFAULT -1',
+    spam_score:  'REAL DEFAULT 0',
+    post_vector: 'TEXT',
+  });
 
   db.prepare(`
     CREATE TABLE IF NOT EXISTS likes (

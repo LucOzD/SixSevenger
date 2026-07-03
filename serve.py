@@ -69,8 +69,18 @@ def interact():
 # ------------------------------------------------------------------
 @app.route('/ranked-categories', methods=['POST'])
 def ranked_categories():
-    user_id = str(request.json['user_id'])
-    ranked  = profiler.get_ranked_categories(user_id, analyser.topology, n=30)
+    data    = request.json
+    user_id = str(data['user_id'])
+
+    # Preferred path: Node sends fresh per-category scores computed from
+    # the database (posts + likes - dislikes + comments). This makes the
+    # ranking stateless and recomputed on every page refresh.
+    direct_scores = data.get('direct_scores')
+    if direct_scores:
+        ranked = profiler.rank_from_scores(direct_scores, analyser.topology, n=30)
+    else:
+        ranked = profiler.get_ranked_categories(user_id, analyser.topology, n=30)
+
     return jsonify({'ranked': [[int(c), float(s)] for c, s in ranked]})
 
 
