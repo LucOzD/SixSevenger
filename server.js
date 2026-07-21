@@ -665,9 +665,26 @@ app.get("/global-feed", async (req, res) => {
     return { ...p, _score: score };
   });
 
-  // Sort by score, pick top posts
+  // Sort by score, then enforce diversity: max 2 posts per user, never adjacent
   scored.sort((a, b) => b._score - a._score);
-  const finalPosts = scored.slice(offset, offset + limit);
+
+  const userCount = {};    // userId -> how many posts picked so far
+  const diverseFeed = [];
+  let lastUserId = null;
+
+  for (const p of scored) {
+    if (diverseFeed.length >= offset + limit) break;
+
+    const count = userCount[p.userId] || 0;
+    if (count >= 2) continue;            // max 2 posts per user
+    if (p.userId === lastUserId) continue; // never back-to-back same user
+
+    userCount[p.userId] = count + 1;
+    lastUserId = p.userId;
+    diverseFeed.push(p);
+  }
+
+  const finalPosts = diverseFeed.slice(offset, offset + limit);
 
   // Record these posts as "seen" for future penalty
   const seenNow = Date.now();
