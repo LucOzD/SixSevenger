@@ -583,8 +583,21 @@ app.get("/global-feed", async (req, res) => {
   // Get relevant accounts for this user
   const relevantIds = getRelevantAccountIds(req.user.id, 20);
 
+  // Exclude posts already served recently (< 1 hour) — forces fresh content
+  // on every scroll rather than re-scoring the same posts.
+  const recentlySeen = db().prepare(`
+    SELECT postId FROM feed_seen
+    WHERE userId = ? AND seenAt > ?
+  `).all(req.user.id, now - 60 * 60 * 1000).map(r => r.postId);
+
   // Fetch candidate posts: primarily from relevant accounts, recent first
+  // Excluding recently-seen posts at the SQL level
   let posts;
+  const excludeClause = recentlySeen.length > 0
+    ? `AND posts.id NOT IN (${recentlySeen.map(() => '?').join(',')})`
+    : '';
+  const excludeParams = recentlySeen.length > 0 ? recentlySeen : [];
+
   if (relevantIds.length > 0) {
     const ph = relevantIds.map(() => '?').join(',');
     posts = db().prepare(`
@@ -595,9 +608,10 @@ app.get("/global-feed", async (req, res) => {
         AND posts.userId != ?
         AND posts.deleted = 0
         AND posts.spam_score < 0.9
+        ${excludeClause}
       ORDER BY posts.timestamp DESC
       LIMIT 200
-    `).all(...relevantIds, req.user.id);
+    `).all(...relevantIds, req.user.id, ...excludeParams);
   } else {
     posts = db().prepare(`
       SELECT posts.*, users.username, users.profilePic
@@ -605,18 +619,13 @@ app.get("/global-feed", async (req, res) => {
       JOIN users ON posts.userId = users.id
       WHERE posts.userId != ? AND posts.deleted = 0
         AND posts.spam_score < 0.9
+        ${excludeClause}
       ORDER BY posts.timestamp DESC
       LIMIT 200
-    `).all(req.user.id);
+    `).all(req.user.id, ...excludeParams);
   }
 
   const now = Date.now();
-
-  // Get posts this user has already been served (seen-penalty)
-  const seenRows = db().prepare(
-    'SELECT postId, seenAt FROM feed_seen WHERE userId = ?'
-  ).all(req.user.id);
-  const seenMap = Object.fromEntries(seenRows.map(r => [r.postId, r.seenAt]));
 
   // Engagement signal: posts with high avg view time get a small boost
   const engagementMap = {};
@@ -647,20 +656,9 @@ app.get("/global-feed", async (req, res) => {
     else if (ageHours < 72) recency = 0.15;
     else                    recency = 0.05;
 
-    // SEEN PENALTY: already-served posts get heavily penalized.
-    // The more recently it was seen, the bigger the penalty.
-    let seenPenalty = 1.0; // no penalty
-    if (seenMap[p.id]) {
-      const seenAgoHours = (now - seenMap[p.id]) / (1000 * 60 * 60);
-      if (seenAgoHours < 1)       seenPenalty = 0.05; // basically hidden
-      else if (seenAgoHours < 6)  seenPenalty = 0.15;
-      else if (seenAgoHours < 24) seenPenalty = 0.35;
-      else                        seenPenalty = 0.6;
-    }
-
     // Final score: recency is a major factor, multiplied by relevance
     const relevance = Math.max(0.01, catScore) * spamFactor + engagementBoost;
-    const score = (relevance * 0.4 + recency * 0.6) * seenPenalty;
+    const score = (relevance * 0.4 + recency * 0.6);
 
     return { ...p, _score: score };
   });
@@ -673,7 +671,7 @@ app.get("/global-feed", async (req, res) => {
   let lastUserId = null;
 
   for (const p of scored) {
-    if (diverseFeed.length >= offset + limit) break;
+    if (diverseFeed.length >= limit) break;
 
     const count = userCount[p.userId] || 0;
     if (count >= 2) continue;            // max 2 posts per user
@@ -684,7 +682,7 @@ app.get("/global-feed", async (req, res) => {
     diverseFeed.push(p);
   }
 
-  const finalPosts = diverseFeed.slice(offset, offset + limit);
+  const finalPosts = diverseFeed;
 
   // Record these posts as "seen" for future penalty
   const seenNow = Date.now();
