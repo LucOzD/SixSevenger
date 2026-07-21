@@ -617,6 +617,8 @@ app.get("/global-feed", async (req, res) => {
   // Get relevant accounts for this user (null = cold start / new user)
   const relevantIds = getRelevantAccountIds(req.user.id, 20);
 
+  const now = Date.now();
+
   // Exclude posts already served recently (< 1 hour) — forces fresh content
   // on every scroll rather than re-scoring the same posts.
   const recentlySeen = db().prepare(`
@@ -689,8 +691,6 @@ app.get("/global-feed", async (req, res) => {
       LIMIT 200
     `).all(req.user.id, ...excludeParams);
   }
-
-  const now = Date.now();
 
   // Engagement signal: posts with high avg view time get a small boost
   const engagementMap = {};
