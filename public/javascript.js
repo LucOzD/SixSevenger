@@ -276,7 +276,7 @@ function createPostCard(post) {
       <div class="global-post-username">${userLink}</div>
     </div>
 
-    <div class="global-post-text">${escapeHtml(post.text)}</div>
+    <div class="global-post-text">${formatPostText(post.text)}</div>
 
     <div class="post-actions">
       <button class="like-btn ${post.userVote === 1 ? 'active' : ''}">👍</button>
@@ -574,8 +574,8 @@ async function votePost(postId, value, likeCountEl, dislikeCountEl, likeBtn, dis
 
 if (inputBox) {
   inputBox.addEventListener("keydown", async (e) => {
-    if (inputBox.value.length > 50) {
-      inputBox.value = inputBox.value.slice(0, 50);
+    if (inputBox.value.length > 100) {
+      inputBox.value = inputBox.value.slice(0, 100);
     }
   });
 }
@@ -593,6 +593,12 @@ function escapeHtml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+// Format post text: escape HTML then make hashtags clickable
+function formatPostText(str) {
+  const escaped = escapeHtml(str);
+  return escaped.replace(/#([a-zA-Z0-9_]+)/g, '<a href="/hashtag/$1" class="hashtag">#$1</a>');
 }
 
 

@@ -30,6 +30,7 @@ def categorise():
     post_id = data.get('post_id')
 
     cat_id, post_vec = analyser.add_post(post_id, text)
+    hashtags = analyser.extract_hashtags(text)
 
     # Persist periodically so newly discovered categories survive a restart
     if analyser._post_count % 25 == 0:
@@ -39,6 +40,7 @@ def categorise():
         'category_id':    cat_id,
         'post_vector':    post_vec,           # sparse vector, stored in SQLite
         'category_words': analyser.category_words.get(cat_id, []),
+        'hashtags':       hashtags,
         'status':         'ok',
     })
 

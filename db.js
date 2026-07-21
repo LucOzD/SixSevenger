@@ -207,6 +207,23 @@ async function initDb() {
     )
   `).run();
 
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS hashtags (
+      tag TEXT PRIMARY KEY,
+      category_id INTEGER DEFAULT -1,
+      post_count INTEGER DEFAULT 0
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS post_hashtags (
+      postId TEXT,
+      tag TEXT,
+      PRIMARY KEY(postId, tag),
+      FOREIGN KEY(postId) REFERENCES posts(id)
+    )
+  `).run();
+
   return db;
 }
 

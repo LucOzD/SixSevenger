@@ -155,8 +155,17 @@ class PostAnalyser:
         text = text.lower()
         text = re.sub(r'http\S+', '', text)
         text = re.sub(r'@\w+', '', text)
+        # Extract hashtags before cleaning — they get triple weight
+        hashtags = re.findall(r'#([a-z0-9_]+)', text)
         text = re.sub(r'[^a-z0-9#\s]', ' ', text)
+        # Repeat hashtags 3x to give them more significance than regular words
+        if hashtags:
+            text = text + ' ' + ' '.join(hashtags * 3)
         return text.strip()
+
+    def extract_hashtags(self, text):
+        """Extract hashtag strings from raw post text."""
+        return re.findall(r'#([a-zA-Z0-9_]+)', text.lower())
 
     def _vectorize(self, cleaned):
         sparse = self.vectorizer.transform([cleaned])

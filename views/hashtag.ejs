@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Hashtag</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<nav class="navbar">
+  <div class="nav-left"><span class="logo">MyApp</span></div>
+  <div class="nav-right">
+    <button onclick="location.href='/'">Home</button>
+    <button id="loginBtn" style="display:none">Login</button>
+    <button id="signupBtn" style="display:none">Sign Up</button>
+    <button id="profileBtn" style="display:none">Profile</button>
+    <button id="logoutBtn" style="display:none">Logout</button>
+  </div>
+</nav>
+
+<div class="container">
+  <div class="hashtag-header">
+    <h1 id="hashtagTitle">#</h1>
+    <p id="hashtagMeta"></p>
+  </div>
+  <div id="hashtagPosts"></div>
+</div>
+
+<script src="/javascript.js"></script>
+<script>
+async function loadHashtag() {
+  const tag = location.pathname.split('/hashtag/')[1];
+  if (!tag) return;
+
+  document.getElementById('hashtagTitle').textContent = '#' + tag;
+
+  const res = await fetch('/hashtag/' + tag);
+  const data = await res.json();
+
+  document.getElementById('hashtagMeta').textContent = data.post_count + ' posts';
+
+  const container = document.getElementById('hashtagPosts');
+  container.innerHTML = '';
+
+  if (data.posts.length === 0) {
+    container.innerHTML = '<p>No posts with this hashtag yet.</p>';
+    return;
+  }
+
+  data.posts.forEach(post => {
+    container.appendChild(createPostCard(post));
+  });
+}
+
+if (window.loadMyInfoPromise) {
+  window.loadMyInfoPromise.then(loadHashtag);
+} else {
+  loadHashtag();
+}
+</script>
+</body>
+</html>

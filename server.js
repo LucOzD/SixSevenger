@@ -57,6 +57,29 @@ async function categorisePost(postId, text, authorId) {
       if (authorId) {
         recordCategoryScore(authorId, data.category_id, POST_INTEREST_WEIGHT);
       }
+
+      // Store hashtag associations: each hashtag maps to this category
+      if (data.hashtags && data.hashtags.length > 0) {
+        for (const tag of data.hashtags) {
+          db().prepare(`
+            INSERT INTO hashtags (tag, category_id, post_count)
+            VALUES (?, ?, 1)
+            ON CONFLICT(tag) DO UPDATE SET
+              category_id = excluded.category_id,
+              post_count = post_count + 1
+          `).run(tag, data.category_id);
+
+          db().prepare(`
+            INSERT INTO post_hashtags (postId, tag) VALUES (?, ?)
+            ON CONFLICT(postId, tag) DO NOTHING
+          `).run(postId, tag);
+        }
+
+        // Hashtags give a stronger interest signal than plain text
+        if (authorId) {
+          recordCategoryScore(authorId, data.category_id, data.hashtags.length * 0.05);
+        }
+      }
     }
   } catch (_) {
     // Recommender not running — post saved, just unranked
@@ -317,13 +340,13 @@ app.post("/update-profile", upload.single("profilePic"), async (req, res) => {
 
 
 // ---------------------------------------------------------
-// CREATE POST (50 char limit)
+// CREATE POST (100 char limit)
 // ---------------------------------------------------------
 app.post("/save-message", (req, res) => {
   if (req.user.guest) return res.status(401).json({ error: "Login required" });
 
   const text = req.body.message.trim();
-  if (text.length > 50) return res.status(400).json({ error: "Post too long" });
+  if (text.length > 100) return res.status(400).json({ error: "Post too long" });
 
   const id = uuidv4();
   const timestamp = Date.now();
@@ -756,6 +779,39 @@ app.get("/global-feed", async (req, res) => {
 
 
 // ---------------------------------------------------------
+// HASHTAG LOOKUP
+// ---------------------------------------------------------
+app.get("/hashtag/:tag", (req, res) => {
+  const tag = req.params.tag.toLowerCase().replace(/^#/, '');
+
+  const hashtagInfo = db().prepare('SELECT * FROM hashtags WHERE tag = ?').get(tag);
+  const posts = db().prepare(`
+    SELECT posts.*, users.username, users.profilePic
+    FROM post_hashtags ph
+    JOIN posts ON ph.postId = posts.id
+    JOIN users ON posts.userId = users.id
+    WHERE ph.tag = ? AND posts.deleted = 0
+    ORDER BY posts.timestamp DESC
+    LIMIT 50
+  `).all(tag);
+
+  const enriched = posts.map(p => {
+    const counts = db().prepare(`
+      SELECT
+        SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END) AS likes,
+        SUM(CASE WHEN value = -1 THEN 1 ELSE 0 END) AS dislikes
+      FROM likes WHERE postId = ?
+    `).get(p.id);
+    const userVoteRow = db().prepare(
+      `SELECT value FROM likes WHERE postId = ? AND userId = ?`
+    ).get(p.id, req.user.id);
+    return { ...p, likes: counts.likes || 0, dislikes: counts.dislikes || 0, userVote: userVoteRow ? userVoteRow.value : 0 };
+  });
+
+  res.json({ tag, category_id: hashtagInfo?.category_id ?? -1, post_count: hashtagInfo?.post_count ?? 0, posts: enriched });
+});
+
+// ---------------------------------------------------------
 // LIKE / DISLIKE (guests blocked)
 // ---------------------------------------------------------
 app.post("/post/:id/like", (req, res) => {
@@ -852,7 +908,7 @@ app.post("/post/:id/comment", (req, res) => {
   const text = (req.body.text || "").trim();
 
   if (!text) return res.status(400).json({ error: "Empty comment" });
-  if (text.length > 50) return res.status(400).json({ error: "Comment too long" });
+  if (text.length > 100) return res.status(400).json({ error: "Comment too long" });
 
   const id = uuidv4();
   const timestamp = Date.now();
@@ -1053,6 +1109,15 @@ app.get('/post-details/:id', (req, res) => {
 
 app.get('/view-post/:id', (req, res) => {
   res.render('post', { user: req.user });
+});
+
+app.get('/hashtag/:tag', (req, res, next) => {
+  // If it's an API request (from fetch) the route above handles it.
+  // This renders the page for direct browser navigation.
+  if (req.headers.accept && req.headers.accept.includes('text/html')) {
+    return res.render('hashtag', { user: req.user });
+  }
+  next();
 });
 
 // ---------------------------------------------------------

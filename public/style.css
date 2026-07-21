@@ -506,3 +506,34 @@ button.submit-btn:hover {
   cursor: default;
 }
 
+
+
+/* HASHTAGS */
+.hashtag {
+  color: #4a8af4;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.hashtag:hover {
+  text-decoration: underline;
+}
+
+.hashtag-header {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  margin-bottom: 20px;
+}
+
+.hashtag-header h1 {
+  margin: 0;
+  color: #4a8af4;
+}
+
+.hashtag-header p {
+  margin: 6px 0 0;
+  color: #666;
+  font-size: 14px;
+}
