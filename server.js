@@ -490,11 +490,22 @@ function getRelevantAccountIds(userId, topN = 20) {
     'SELECT category_id, score FROM user_interests WHERE userId = ?'
   ).all(userId);
 
+  // COLD START: new user with no interests yet.
+  // Return null to signal the feed should do a wide category spread.
+  if (myInterests.length === 0) {
+    return null;
+  }
+
   const myTopCats = myInterests
     .filter(r => r.score > 0.05)
     .sort((a, b) => b.score - a.score)
     .slice(0, 8)
     .map(r => r.category_id);
+
+  // If user has some interests but they're all very weak, still do discovery
+  if (myTopCats.length === 0) {
+    return null;
+  }
 
   const accountScores = {};
 
@@ -580,7 +591,7 @@ app.get("/global-feed", async (req, res) => {
   // Topology-aware category scores
   const categoryScores = await getRankedCategoryScores(req.user.id);
 
-  // Get relevant accounts for this user
+  // Get relevant accounts for this user (null = cold start / new user)
   const relevantIds = getRelevantAccountIds(req.user.id, 20);
 
   // Exclude posts already served recently (< 1 hour) — forces fresh content
@@ -590,15 +601,46 @@ app.get("/global-feed", async (req, res) => {
     WHERE userId = ? AND seenAt > ?
   `).all(req.user.id, now - 60 * 60 * 1000).map(r => r.postId);
 
-  // Fetch candidate posts: primarily from relevant accounts, recent first
-  // Excluding recently-seen posts at the SQL level
-  let posts;
   const excludeClause = recentlySeen.length > 0
     ? `AND posts.id NOT IN (${recentlySeen.map(() => '?').join(',')})`
     : '';
   const excludeParams = recentlySeen.length > 0 ? recentlySeen : [];
 
-  if (relevantIds.length > 0) {
+  let posts;
+
+  if (relevantIds === null) {
+    // COLD START: pick posts spread across as many categories as possible
+    // so the user sees a wide variety and their interactions teach the algorithm.
+    // Get one recent post from each category, ordered by recency.
+    posts = db().prepare(`
+      SELECT posts.*, users.username, users.profilePic
+      FROM posts
+      JOIN users ON posts.userId = users.id
+      WHERE posts.userId != ?
+        AND posts.deleted = 0
+        AND posts.spam_score < 0.9
+        AND posts.category_id != -1
+        ${excludeClause}
+      ORDER BY posts.timestamp DESC
+      LIMIT 200
+    `).all(req.user.id, ...excludeParams);
+
+    // Deduplicate by category: pick the most recent post per category
+    const seenCats = new Set();
+    const diverse = [];
+    for (const p of posts) {
+      if (!seenCats.has(p.category_id)) {
+        diverse.push(p);
+        seenCats.add(p.category_id);
+      }
+    }
+    // Fill remaining slots with other recent posts for volume
+    for (const p of posts) {
+      if (diverse.length >= 60) break;
+      if (!diverse.includes(p)) diverse.push(p);
+    }
+    posts = diverse;
+  } else if (relevantIds.length > 0) {
     const ph = relevantIds.map(() => '?').join(',');
     posts = db().prepare(`
       SELECT posts.*, users.username, users.profilePic
