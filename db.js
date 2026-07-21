@@ -196,6 +196,17 @@ async function initDb() {
     )
   `).run();
 
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS feed_seen (
+      userId TEXT,
+      postId TEXT,
+      seenAt INTEGER,
+      PRIMARY KEY(userId, postId),
+      FOREIGN KEY(userId) REFERENCES users(id),
+      FOREIGN KEY(postId) REFERENCES posts(id)
+    )
+  `).run();
+
   return db;
 }
 

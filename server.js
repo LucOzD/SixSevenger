@@ -91,7 +91,7 @@ async function getRankedCategoryScores(userId) {
   ).all(userId);
   const direct = Object.fromEntries(rows.map(r => [r.category_id, r.score]));
 
-  // Collaborative: find what categories similar users like
+  // Collaborative: category-level signal from similar users
   const myTopCats = rows
     .filter(r => r.score > 0.1)
     .sort((a, b) => b.score - a.score)
@@ -130,7 +130,6 @@ async function getRankedCategoryScores(userId) {
     const data = await res.json();
     return Object.fromEntries(data.ranked.map(([c, s]) => [c, s]));
   } catch (_) {
-    // Fallback: use raw SQLite scores without topology boost
     return direct;
   }
 }
@@ -477,99 +476,149 @@ app.post("/track-engagement", (req, res) => {
 
 
 // ---------------------------------------------------------
-// COLLABORATIVE FILTERING HELPER
-// Finds users with similar category interest profiles and returns
-// posts THEY liked that the current user hasn't seen or voted on.
+// RELEVANT ACCOUNTS
+// Instead of scanning all users, pick a focused set of accounts
+// whose content is most likely relevant to the current user.
+// This set is based on:
+//   1. Users who post in the same categories the current user likes
+//   2. Users whose posts were liked by taste-similar users
+//   3. A handful of random accounts for discovery / anti-stagnation
+// The set refreshes on every page load + updates via interactions.
 // ---------------------------------------------------------
-function getCollaborativeBoosts(userId) {
-  // Get current user's interests
+function getRelevantAccountIds(userId, topN = 20) {
   const myInterests = db().prepare(
     'SELECT category_id, score FROM user_interests WHERE userId = ?'
   ).all(userId);
 
-  if (myInterests.length === 0) return {};
-
-  const myCats = Object.fromEntries(myInterests.map(r => [r.category_id, r.score]));
   const myTopCats = myInterests
-    .filter(r => r.score > 0.1)
+    .filter(r => r.score > 0.05)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 5)
+    .slice(0, 8)
     .map(r => r.category_id);
 
-  if (myTopCats.length === 0) return {};
+  const accountScores = {};
 
-  // Find users who also have positive scores in the same top categories
-  const placeholders = myTopCats.map(() => '?').join(',');
-  const similarUsers = db().prepare(`
-    SELECT userId, SUM(score) AS totalScore
-    FROM user_interests
-    WHERE category_id IN (${placeholders})
-      AND userId != ?
-      AND score > 0.1
-    GROUP BY userId
-    ORDER BY totalScore DESC
-    LIMIT 10
-  `).all(...myTopCats, userId);
-
-  if (similarUsers.length === 0) return {};
-
-  // Get posts those similar users liked that the current user hasn't voted on
-  const simUserIds = similarUsers.map(u => u.userId);
-  const userPlaceholders = simUserIds.map(() => '?').join(',');
-
-  const likedPosts = db().prepare(`
-    SELECT DISTINCT l.postId, COUNT(*) AS likeCount
-    FROM likes l
-    WHERE l.userId IN (${userPlaceholders})
-      AND l.value = 1
-      AND l.postId NOT IN (
-        SELECT postId FROM likes WHERE userId = ?
-      )
-    GROUP BY l.postId
-    ORDER BY likeCount DESC
-    LIMIT 30
-  `).all(...simUserIds, userId);
-
-  // Return a map of postId -> collaborative boost score
-  const boosts = {};
-  for (const row of likedPosts) {
-    // Normalize: 1 similar user liked it = small boost, many = bigger
-    boosts[row.postId] = Math.min(0.3, row.likeCount * 0.08);
+  // 1. Users who post in categories the current user likes
+  if (myTopCats.length > 0) {
+    const ph = myTopCats.map(() => '?').join(',');
+    const posters = db().prepare(`
+      SELECT userId, COUNT(*) AS cnt FROM posts
+      WHERE category_id IN (${ph}) AND userId != ? AND deleted = 0
+      GROUP BY userId
+      ORDER BY cnt DESC
+      LIMIT 30
+    `).all(...myTopCats, userId);
+    for (const p of posters) {
+      accountScores[p.userId] = (accountScores[p.userId] || 0) + p.cnt * 2;
+    }
   }
-  return boosts;
+
+  // 2. Users whose posts are liked by taste-similar users (collaborative)
+  if (myTopCats.length > 0) {
+    const ph = myTopCats.map(() => '?').join(',');
+    const simUsers = db().prepare(`
+      SELECT userId FROM user_interests
+      WHERE category_id IN (${ph}) AND userId != ? AND score > 0.1
+      GROUP BY userId
+      ORDER BY SUM(score) DESC
+      LIMIT 10
+    `).all(...myTopCats, userId);
+
+    if (simUsers.length > 0) {
+      const simIds = simUsers.map(u => u.userId);
+      const simPH = simIds.map(() => '?').join(',');
+      const likedAuthors = db().prepare(`
+        SELECT p.userId, COUNT(*) AS cnt
+        FROM likes l JOIN posts p ON l.postId = p.id
+        WHERE l.userId IN (${simPH}) AND l.value = 1 AND p.userId != ?
+        GROUP BY p.userId
+        ORDER BY cnt DESC
+        LIMIT 20
+      `).all(...simIds, userId);
+      for (const a of likedAuthors) {
+        accountScores[a.userId] = (accountScores[a.userId] || 0) + a.cnt;
+      }
+    }
+  }
+
+  // 3. Following — users the current user explicitly follows
+  const following = db().prepare(
+    'SELECT followingId FROM follows WHERE followerId = ?'
+  ).all(userId);
+  for (const f of following) {
+    accountScores[f.followingId] = (accountScores[f.followingId] || 0) + 5;
+  }
+
+  // Sort and take topN, then add a few random for discovery
+  const sorted = Object.entries(accountScores)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, topN - 3)
+    .map(([id]) => id);
+
+  // 4. A few random accounts for anti-stagnation / discovery
+  const randomAccounts = db().prepare(`
+    SELECT id FROM users
+    WHERE guest = 0 AND id != ?
+    ORDER BY RANDOM()
+    LIMIT 3
+  `).all(userId).map(u => u.id);
+
+  const combined = [...new Set([...sorted, ...randomAccounts])];
+  return combined;
 }
 
 
 // ---------------------------------------------------------
-// GLOBAL FEED (with collaborative + engagement signals)
+// GLOBAL FEED
+// Pulls posts primarily from relevant accounts, heavily
+// weighted by recency, with seen-penalty for already-served posts.
 // ---------------------------------------------------------
 app.get("/global-feed", async (req, res) => {
   const limit  = parseInt(req.query.limit)  || 20;
   const offset = parseInt(req.query.offset) || 0;
-  // Rank over a wide pool so relevant posts aren't missed just because
-  // they aren't the most recent. Keeps recommendations meaningful.
-  const pool   = Math.max(limit * 10, 200);
 
-  // Topology-aware scores from Python (falls back to raw SQLite if down)
+  // Topology-aware category scores
   const categoryScores = await getRankedCategoryScores(req.user.id);
 
-  const posts = db().prepare(`
-    SELECT posts.*, users.username, users.profilePic
-    FROM posts
-    JOIN users ON posts.userId = users.id
-    WHERE posts.userId != ? AND posts.deleted = 0
-      AND posts.spam_score < 0.9
-    ORDER BY posts.timestamp DESC
-    LIMIT ? OFFSET ?
-  `).all(req.user.id, pool, offset);
+  // Get relevant accounts for this user
+  const relevantIds = getRelevantAccountIds(req.user.id, 20);
+
+  // Fetch candidate posts: primarily from relevant accounts, recent first
+  let posts;
+  if (relevantIds.length > 0) {
+    const ph = relevantIds.map(() => '?').join(',');
+    posts = db().prepare(`
+      SELECT posts.*, users.username, users.profilePic
+      FROM posts
+      JOIN users ON posts.userId = users.id
+      WHERE posts.userId IN (${ph})
+        AND posts.userId != ?
+        AND posts.deleted = 0
+        AND posts.spam_score < 0.9
+      ORDER BY posts.timestamp DESC
+      LIMIT 200
+    `).all(...relevantIds, req.user.id);
+  } else {
+    posts = db().prepare(`
+      SELECT posts.*, users.username, users.profilePic
+      FROM posts
+      JOIN users ON posts.userId = users.id
+      WHERE posts.userId != ? AND posts.deleted = 0
+        AND posts.spam_score < 0.9
+      ORDER BY posts.timestamp DESC
+      LIMIT 200
+    `).all(req.user.id);
+  }
 
   const now = Date.now();
 
-  // Collaborative filtering: what did users with similar interests like?
-  const collabBoosts = getCollaborativeBoosts(req.user.id);
+  // Get posts this user has already been served (seen-penalty)
+  const seenRows = db().prepare(
+    'SELECT postId, seenAt FROM feed_seen WHERE userId = ?'
+  ).all(req.user.id);
+  const seenMap = Object.fromEntries(seenRows.map(r => [r.postId, r.seenAt]));
 
-  // Engagement signal: posts that get high average view time from everyone
-  // get a slight boost (popular = probably interesting content).
+  // Engagement signal: posts with high avg view time get a small boost
   const engagementMap = {};
   const engRows = db().prepare(`
     SELECT postId, AVG(viewMs) AS avgView, AVG(hoverMs) AS avgHover, COUNT(*) AS n
@@ -578,42 +627,59 @@ app.get("/global-feed", async (req, res) => {
     HAVING n >= 2
   `).all();
   for (const e of engRows) {
-    // Normalize to 0–0.1 range: 10s average view = max boost
     engagementMap[e.postId] = Math.min(0.1, (e.avgView / 10000) * 0.1 + (e.avgHover / 5000) * 0.03);
   }
 
+  // Score each post
   const scored = posts.map(p => {
     const catScore       = categoryScores[p.category_id] ?? 0;
     const spamFactor     = 1 - (p.spam_score || 0);
-    const ageHours       = (now - p.timestamp) / (1000 * 60 * 60);
-    const recency        = Math.max(0, 1 - ageHours / 24) * 0.05;
-    const collabBoost    = collabBoosts[p.id] || 0;
     const engagementBoost = engagementMap[p.id] || 0;
 
-    const score = (catScore * spamFactor) + recency + collabBoost + engagementBoost;
+    // RECENCY: strong time-based boost. Posts < 1hr get major boost,
+    // < 6hr moderate, < 24hr mild. Older posts decay quickly.
+    const ageMs    = now - p.timestamp;
+    const ageHours = ageMs / (1000 * 60 * 60);
+    let recency;
+    if (ageHours < 1)       recency = 1.0;
+    else if (ageHours < 6)  recency = 0.7;
+    else if (ageHours < 24) recency = 0.4;
+    else if (ageHours < 72) recency = 0.15;
+    else                    recency = 0.05;
+
+    // SEEN PENALTY: already-served posts get heavily penalized.
+    // The more recently it was seen, the bigger the penalty.
+    let seenPenalty = 1.0; // no penalty
+    if (seenMap[p.id]) {
+      const seenAgoHours = (now - seenMap[p.id]) / (1000 * 60 * 60);
+      if (seenAgoHours < 1)       seenPenalty = 0.05; // basically hidden
+      else if (seenAgoHours < 6)  seenPenalty = 0.15;
+      else if (seenAgoHours < 24) seenPenalty = 0.35;
+      else                        seenPenalty = 0.6;
+    }
+
+    // Final score: recency is a major factor, multiplied by relevance
+    const relevance = Math.max(0.01, catScore) * spamFactor + engagementBoost;
+    const score = (relevance * 0.4 + recency * 0.6) * seenPenalty;
+
     return { ...p, _score: score };
   });
 
-  const ranked   = scored.filter(p => p._score > 0.01).sort((a, b) => b._score - a._score);
-  const unranked = scored.filter(p => p._score <= 0.01);
+  // Sort by score, pick top posts
+  scored.sort((a, b) => b._score - a._score);
+  const finalPosts = scored.slice(offset, offset + limit);
 
-  let finalPosts;
-  if (ranked.length === 0) {
-    finalPosts = unranked.sort((a, b) => b.timestamp - a.timestamp).slice(0, limit);
-  } else {
-    const exploreN  = Math.max(1, Math.floor(limit * 0.15));
-    const explore   = unranked.sort(() => Math.random() - 0.5).slice(0, exploreN);
-    const topRanked = ranked.slice(0, limit - exploreN);
-    const merged = [];
-    let ei = 0;
-    topRanked.forEach((p, i) => {
-      merged.push(p);
-      if ((i + 1) % 6 === 0 && ei < explore.length) merged.push(explore[ei++]);
-    });
-    while (ei < explore.length) merged.push(explore[ei++]);
-    finalPosts = merged.slice(0, limit);
+  // Record these posts as "seen" for future penalty
+  const seenNow = Date.now();
+  for (const p of finalPosts) {
+    db().prepare(`
+      INSERT INTO feed_seen (userId, postId, seenAt)
+      VALUES (?, ?, ?)
+      ON CONFLICT(userId, postId) DO UPDATE SET seenAt = excluded.seenAt
+    `).run(req.user.id, p.id, seenNow);
   }
 
+  // Enrich with like/dislike counts
   const enriched = finalPosts.map(p => {
     const counts = db().prepare(`
       SELECT
