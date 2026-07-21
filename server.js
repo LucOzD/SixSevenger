@@ -91,11 +91,41 @@ async function getRankedCategoryScores(userId) {
   ).all(userId);
   const direct = Object.fromEntries(rows.map(r => [r.category_id, r.score]));
 
+  // Collaborative: find what categories similar users like
+  const myTopCats = rows
+    .filter(r => r.score > 0.1)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map(r => r.category_id);
+
+  let collaborative = {};
+  if (myTopCats.length > 0) {
+    const placeholders = myTopCats.map(() => '?').join(',');
+    const simUsers = db().prepare(`
+      SELECT userId, SUM(score) AS s FROM user_interests
+      WHERE category_id IN (${placeholders}) AND userId != ? AND score > 0.1
+      GROUP BY userId ORDER BY s DESC LIMIT 10
+    `).all(...myTopCats, userId);
+
+    if (simUsers.length > 0) {
+      const simIds = simUsers.map(u => u.userId);
+      const simPH = simIds.map(() => '?').join(',');
+      const simInterests = db().prepare(`
+        SELECT category_id, AVG(score) AS avgScore FROM user_interests
+        WHERE userId IN (${simPH}) AND score > 0.05
+        GROUP BY category_id
+      `).all(...simIds);
+      collaborative = Object.fromEntries(
+        simInterests.map(r => [r.category_id, r.avgScore])
+      );
+    }
+  }
+
   try {
     const res = await fetch(`${RECOMMENDER_URL}/ranked-categories`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId, direct_scores: direct }),
+      body: JSON.stringify({ user_id: userId, direct_scores: direct, collaborative }),
     });
     const data = await res.json();
     return Object.fromEntries(data.ranked.map(([c, s]) => [c, s]));
@@ -402,6 +432,117 @@ function updateSpamScore(postId) {
   db().prepare(`UPDATE posts SET spam_score = ? WHERE id = ?`)
     .run(spamScore, postId);
 }
+// ---------------------------------------------------------
+// ENGAGEMENT TRACKING
+// Receives batched view/hover data from the frontend.
+// Very slight positive signal — dwarfed by likes/dislikes
+// but helps surface posts that passively engage people.
+// ---------------------------------------------------------
+app.post("/track-engagement", (req, res) => {
+  if (req.user.guest) return res.json({ ok: true }); // don't track guests
+
+  const events = req.body.events;
+  if (!Array.isArray(events)) return res.status(400).json({ error: "Bad data" });
+
+  const now = Date.now();
+  for (const ev of events.slice(0, 50)) { // cap at 50 per batch
+    const { postId, viewMs, hoverMs } = ev;
+    if (!postId) continue;
+
+    const viewClamped  = Math.min(Math.max(0, viewMs  || 0), 60000);
+    const hoverClamped = Math.min(Math.max(0, hoverMs || 0), 60000);
+
+    // Only record meaningful engagement (> 1 second viewed)
+    if (viewClamped < 1000) continue;
+
+    db().prepare(`
+      INSERT INTO engagement (id, postId, userId, viewMs, hoverMs, created)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(uuidv4(), postId, req.user.id, viewClamped, hoverClamped, now);
+
+    // Micro-signal: long views are a weak interest signal.
+    // 3+ seconds viewed = 0.01, 8+ seconds = 0.02, hover adds 0.01
+    const post = db().prepare('SELECT category_id FROM posts WHERE id = ?').get(postId);
+    if (post && post.category_id !== -1) {
+      let delta = 0;
+      if (viewClamped >= 8000) delta += 0.02;
+      else if (viewClamped >= 3000) delta += 0.01;
+      if (hoverClamped >= 2000) delta += 0.01;
+      if (delta > 0) recordCategoryScore(req.user.id, post.category_id, delta);
+    }
+  }
+
+  res.json({ ok: true });
+});
+
+
+// ---------------------------------------------------------
+// COLLABORATIVE FILTERING HELPER
+// Finds users with similar category interest profiles and returns
+// posts THEY liked that the current user hasn't seen or voted on.
+// ---------------------------------------------------------
+function getCollaborativeBoosts(userId) {
+  // Get current user's interests
+  const myInterests = db().prepare(
+    'SELECT category_id, score FROM user_interests WHERE userId = ?'
+  ).all(userId);
+
+  if (myInterests.length === 0) return {};
+
+  const myCats = Object.fromEntries(myInterests.map(r => [r.category_id, r.score]));
+  const myTopCats = myInterests
+    .filter(r => r.score > 0.1)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map(r => r.category_id);
+
+  if (myTopCats.length === 0) return {};
+
+  // Find users who also have positive scores in the same top categories
+  const placeholders = myTopCats.map(() => '?').join(',');
+  const similarUsers = db().prepare(`
+    SELECT userId, SUM(score) AS totalScore
+    FROM user_interests
+    WHERE category_id IN (${placeholders})
+      AND userId != ?
+      AND score > 0.1
+    GROUP BY userId
+    ORDER BY totalScore DESC
+    LIMIT 10
+  `).all(...myTopCats, userId);
+
+  if (similarUsers.length === 0) return {};
+
+  // Get posts those similar users liked that the current user hasn't voted on
+  const simUserIds = similarUsers.map(u => u.userId);
+  const userPlaceholders = simUserIds.map(() => '?').join(',');
+
+  const likedPosts = db().prepare(`
+    SELECT DISTINCT l.postId, COUNT(*) AS likeCount
+    FROM likes l
+    WHERE l.userId IN (${userPlaceholders})
+      AND l.value = 1
+      AND l.postId NOT IN (
+        SELECT postId FROM likes WHERE userId = ?
+      )
+    GROUP BY l.postId
+    ORDER BY likeCount DESC
+    LIMIT 30
+  `).all(...simUserIds, userId);
+
+  // Return a map of postId -> collaborative boost score
+  const boosts = {};
+  for (const row of likedPosts) {
+    // Normalize: 1 similar user liked it = small boost, many = bigger
+    boosts[row.postId] = Math.min(0.3, row.likeCount * 0.08);
+  }
+  return boosts;
+}
+
+
+// ---------------------------------------------------------
+// GLOBAL FEED (with collaborative + engagement signals)
+// ---------------------------------------------------------
 app.get("/global-feed", async (req, res) => {
   const limit  = parseInt(req.query.limit)  || 20;
   const offset = parseInt(req.query.offset) || 0;
@@ -423,12 +564,34 @@ app.get("/global-feed", async (req, res) => {
   `).all(req.user.id, pool, offset);
 
   const now = Date.now();
+
+  // Collaborative filtering: what did users with similar interests like?
+  const collabBoosts = getCollaborativeBoosts(req.user.id);
+
+  // Engagement signal: posts that get high average view time from everyone
+  // get a slight boost (popular = probably interesting content).
+  const engagementMap = {};
+  const engRows = db().prepare(`
+    SELECT postId, AVG(viewMs) AS avgView, AVG(hoverMs) AS avgHover, COUNT(*) AS n
+    FROM engagement
+    GROUP BY postId
+    HAVING n >= 2
+  `).all();
+  for (const e of engRows) {
+    // Normalize to 0–0.1 range: 10s average view = max boost
+    engagementMap[e.postId] = Math.min(0.1, (e.avgView / 10000) * 0.1 + (e.avgHover / 5000) * 0.03);
+  }
+
   const scored = posts.map(p => {
-    const catScore   = categoryScores[p.category_id] ?? 0;
-    const spamFactor = 1 - (p.spam_score || 0);
-    const ageHours   = (now - p.timestamp) / (1000 * 60 * 60);
-    const recency    = Math.max(0, 1 - ageHours / 24) * 0.05;
-    return { ...p, _score: catScore * spamFactor + recency };
+    const catScore       = categoryScores[p.category_id] ?? 0;
+    const spamFactor     = 1 - (p.spam_score || 0);
+    const ageHours       = (now - p.timestamp) / (1000 * 60 * 60);
+    const recency        = Math.max(0, 1 - ageHours / 24) * 0.05;
+    const collabBoost    = collabBoosts[p.id] || 0;
+    const engagementBoost = engagementMap[p.id] || 0;
+
+    const score = (catScore * spamFactor) + recency + collabBoost + engagementBoost;
+    return { ...p, _score: score };
   });
 
   const ranked   = scored.filter(p => p._score > 0.01).sort((a, b) => b._score - a._score);

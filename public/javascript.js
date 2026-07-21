@@ -594,3 +594,129 @@ function escapeHtml(str) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 }
+
+
+// =========================================================
+// ENGAGEMENT TRACKER
+// Measures how long each post is visible on screen (viewport
+// time via IntersectionObserver) and how long the cursor
+// hovers over it. Batches events and sends every 10 seconds.
+// These are very slight signals — they don't override likes
+// or dislikes, they just add passive engagement data.
+// =========================================================
+
+(function() {
+  const engagementData = {}; // postId -> { viewStart, viewMs, hoverStart, hoverMs }
+
+  function getEntry(postId) {
+    if (!engagementData[postId]) {
+      engagementData[postId] = { viewStart: null, viewMs: 0, hoverStart: null, hoverMs: 0 };
+    }
+    return engagementData[postId];
+  }
+
+  // IntersectionObserver: track when posts enter/leave the viewport
+  const viewObserver = new IntersectionObserver((entries) => {
+    const now = Date.now();
+    entries.forEach(entry => {
+      const postId = entry.target.dataset.postId;
+      if (!postId) return;
+      const data = getEntry(postId);
+
+      if (entry.isIntersecting) {
+        data.viewStart = now;
+      } else if (data.viewStart) {
+        data.viewMs += now - data.viewStart;
+        data.viewStart = null;
+      }
+    });
+  }, { threshold: 0.5 }); // post must be 50% visible
+
+  // Track a single post card element
+  function trackPost(el) {
+    if (el._engTracked) return;
+    el._engTracked = true;
+    const postId = el.dataset.postId;
+    if (!postId) return;
+
+    viewObserver.observe(el);
+
+    el.addEventListener('mouseenter', () => {
+      const data = getEntry(postId);
+      data.hoverStart = Date.now();
+    });
+    el.addEventListener('mouseleave', () => {
+      const data = getEntry(postId);
+      if (data.hoverStart) {
+        data.hoverMs += Date.now() - data.hoverStart;
+        data.hoverStart = null;
+      }
+    });
+  }
+
+  // MutationObserver: catch posts as they are added to the DOM
+  const domObserver = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      for (const node of m.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        if (node.classList && node.classList.contains('global-post') && node.dataset.postId) {
+          trackPost(node);
+        }
+        if (node.querySelectorAll) {
+          node.querySelectorAll('.global-post[data-post-id]').forEach(trackPost);
+        }
+      }
+    }
+  });
+  domObserver.observe(document.documentElement, { childList: true, subtree: true });
+
+  // Also track any posts already in the DOM
+  function observeExisting() {
+    document.querySelectorAll('.global-post[data-post-id]').forEach(trackPost);
+  }
+
+  // Flush engagement data to server every 10 seconds
+  function flush() {
+    if (window.isGuest) return;
+
+    const now = Date.now();
+    const events = [];
+
+    for (const [postId, data] of Object.entries(engagementData)) {
+      let viewMs = data.viewMs;
+      if (data.viewStart) {
+        viewMs += now - data.viewStart;
+        data.viewStart = now;
+      }
+      let hoverMs = data.hoverMs;
+      if (data.hoverStart) {
+        hoverMs += now - data.hoverStart;
+        data.hoverStart = now;
+      }
+
+      if (viewMs >= 1000) {
+        events.push({ postId, viewMs: Math.round(viewMs), hoverMs: Math.round(hoverMs) });
+      }
+
+      data.viewMs = 0;
+      data.hoverMs = 0;
+    }
+
+    if (events.length > 0) {
+      fetch('/track-engagement', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ events }),
+      }).catch(() => {});
+    }
+  }
+
+  window.addEventListener('beforeunload', flush);
+  setInterval(flush, 10000);
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(observeExisting, 500));
+  } else {
+    setTimeout(observeExisting, 500);
+  }
+})();

@@ -183,6 +183,19 @@ async function initDb() {
     )
   `).run();
 
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS engagement (
+      id TEXT PRIMARY KEY,
+      postId TEXT,
+      userId TEXT,
+      viewMs INTEGER DEFAULT 0,
+      hoverMs INTEGER DEFAULT 0,
+      created INTEGER,
+      FOREIGN KEY(postId) REFERENCES posts(id),
+      FOREIGN KEY(userId) REFERENCES users(id)
+    )
+  `).run();
+
   return db;
 }
 

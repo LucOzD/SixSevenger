@@ -354,7 +354,7 @@ class UserProfiler:
 
         return sorted(scores.items(), key=lambda x: x[1], reverse=True)[:n]
 
-    def rank_from_scores(self, direct_scores, topology, n=30):
+    def rank_from_scores(self, direct_scores, topology, collaborative=None, n=30):
         """
         Stateless ranking. Given a map of {category_id: score} computed
         fresh from the database (posts authored + likes - dislikes +
@@ -362,10 +362,20 @@ class UserProfiler:
         and directional alignment as get_ranked_categories — but without
         relying on any in-memory profile. This lets the feed recompute
         recommendations from scratch on every page load.
+
+        collaborative: optional {category_id: score} from users with
+        similar taste profiles — adds a "people like you also liked" boost.
         """
         direct = {int(k): float(v) for k, v in direct_scores.items()}
         all_cats = set(topology.centroids.keys()) | set(direct.keys())
         scores = {cat: direct.get(cat, 0.01) for cat in all_cats}
+
+        # Collaborative signal: blend in what similar users like
+        if collaborative:
+            for cat, collab_score in collaborative.items():
+                cat_int = int(cat)
+                # Weighted at 30% of the collaborative signal
+                scores[cat_int] = scores.get(cat_int, 0.01) + float(collab_score) * 0.3
 
         # Build the user's aggregate interest / dislike directions from
         # the category centroids weighted by their direct scores.

@@ -77,8 +77,10 @@ def ranked_categories():
     # the database (posts + likes - dislikes + comments). This makes the
     # ranking stateless and recomputed on every page refresh.
     direct_scores = data.get('direct_scores')
+    collaborative = data.get('collaborative')
     if direct_scores:
-        ranked = profiler.rank_from_scores(direct_scores, analyser.topology, n=30)
+        ranked = profiler.rank_from_scores(direct_scores, analyser.topology,
+                                           collaborative=collaborative, n=30)
     else:
         ranked = profiler.get_ranked_categories(user_id, analyser.topology, n=30)
 
