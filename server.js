@@ -46,10 +46,11 @@ async function categorisePost(postId, text, authorId) {
     });
     const data = await res.json();
     if (data.category_id !== undefined && data.category_id !== -1) {
-      db().prepare(`UPDATE posts SET category_id = ?, post_vector = ? WHERE id = ?`)
+      db().prepare(`UPDATE posts SET category_id = ?, post_vector = ?, sentiment = ? WHERE id = ?`)
         .run(
           data.category_id,
           data.post_vector ? JSON.stringify(data.post_vector) : null,
+          data.sentiment || 0,
           postId
         );
 
@@ -1343,10 +1344,11 @@ async function categoriseBacklog() {
       });
       const data = await res.json();
       if (data.category_id !== undefined && data.category_id !== -1) {
-        db().prepare(`UPDATE posts SET category_id = ?, post_vector = ? WHERE id = ?`)
+        db().prepare(`UPDATE posts SET category_id = ?, post_vector = ?, sentiment = ? WHERE id = ?`)
           .run(
             data.category_id,
             data.post_vector ? JSON.stringify(data.post_vector) : null,
+            data.sentiment || 0,
             post.id
           );
         // Seed the author's interest from their own post

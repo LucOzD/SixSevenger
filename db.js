@@ -110,6 +110,7 @@ async function initDb() {
     category_id: 'INTEGER DEFAULT -1',
     spam_score:  'REAL DEFAULT 0',
     post_vector: 'TEXT',
+    sentiment:   'REAL DEFAULT 0',
   });
 
   db.prepare(`

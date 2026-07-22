@@ -7,7 +7,7 @@ import json
 import atexit
 import numpy as np
 from flask import Flask, request, jsonify
-from recommender import PostAnalyser, UserProfiler
+from recommender import PostAnalyser, UserProfiler, SentimentLexicon
 
 app     = Flask(__name__)
 STATE   = 'recommender_state.pkl'
@@ -29,7 +29,7 @@ def categorise():
     text    = data.get('text', '')
     post_id = data.get('post_id')
 
-    cat_id, post_vec = analyser.add_post(post_id, text)
+    cat_id, post_vec, sentiment = analyser.add_post(post_id, text)
     hashtags = analyser.extract_hashtags(text)
 
     # Persist periodically so newly discovered categories survive a restart
@@ -41,7 +41,8 @@ def categorise():
         'post_vector':    post_vec,           # sparse vector, stored in SQLite
         'category_words': analyser.category_words.get(cat_id, []),
         'hashtags':       hashtags,
-        'status':         'ok',
+        'sentiment':      sentiment,
+        'status':         'ok' if cat_id != -1 else 'pending',
     })
 
 
@@ -103,6 +104,9 @@ def categories():
             'words':        words,
             'description':  analyser.describe(cat_id),
             'post_count':   analyser.topology.n_posts.get(cat_id, 0),
+            'sentiment':    SentimentLexicon.label(
+                               analyser.sentiment.score(analyser.describe(cat_id))
+                           ),
             'similar_to':   [
                 {
                     'category':    int(sim_id),

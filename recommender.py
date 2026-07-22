@@ -111,6 +111,43 @@ class CategoryTopology:
         return {'similarity': round(sim, 3), 'cat_a_distinctive_words': words}
 
 
+import nltk
+nltk.download('vader_lexicon', quiet=True)
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+
+
+class SentimentLexicon:
+    """
+    Sentiment analysis using NLTK's VADER (Valence Aware Dictionary and
+    sEntiment Reasoner). VADER is specifically tuned for social media text —
+    handles slang, capitalization, punctuation emphasis, and emoji.
+
+    Returns the compound score: a normalized value from -1.0 (most negative)
+    to +1.0 (most positive).
+    """
+
+    def __init__(self):
+        self._analyzer = SentimentIntensityAnalyzer()
+
+    def score(self, text):
+        """Return VADER compound score in [-1.0, 1.0]."""
+        scores = self._analyzer.polarity_scores(text)
+        return scores['compound']
+
+    def full_scores(self, text):
+        """Return the full VADER breakdown: neg, neu, pos, compound."""
+        return self._analyzer.polarity_scores(text)
+
+    @staticmethod
+    def label(compound):
+        """Convert compound score to a simple label."""
+        if compound >= 0.05:
+            return 'positive'
+        elif compound <= -0.05:
+            return 'negative'
+        return 'neutral'
+
+
 class PostAnalyser:
     """
     Embeds posts into a fixed-dimensional hashed vector space and assigns
@@ -131,8 +168,8 @@ class PostAnalyser:
     never needs re-fitting and unseen words are handled gracefully.
     """
 
-    def __init__(self, similarity_threshold=0.18, n_features=4096,
-                 rebuild_every=25):
+    def __init__(self, similarity_threshold=0.12, n_features=4096,
+                 rebuild_every=25, min_posts_for_category=2):
         self.n_features = n_features
         self.vectorizer = HashingVectorizer(
             n_features=n_features,
@@ -142,6 +179,7 @@ class PostAnalyser:
             norm='l2',
         )
         self.similarity_threshold = similarity_threshold
+        self.min_posts_for_category = min_posts_for_category
         self.rebuild_every        = rebuild_every
 
         self.topology       = CategoryTopology()   # owns the centroids
@@ -149,6 +187,14 @@ class PostAnalyser:
         self._word_counts    = defaultdict(Counter) # cat_id -> word frequencies
         self._next_id        = 0
         self._post_count     = 0
+
+        # Pending posts: vectors that didn't match any existing category.
+        # They wait here until enough similar posts accumulate to form
+        # a real category (min_posts_for_category).
+        self._pending = []  # [(post_id, dense_vector, cleaned_text)]
+
+        # Basic sentiment lexicon
+        self.sentiment = SentimentLexicon()
 
     # ------------------------------------------------------------------
     def _clean(self, text):
@@ -191,31 +237,104 @@ class PostAnalyser:
     # ------------------------------------------------------------------
     def add_post(self, post_id, text):
         """
-        Embed the post, assign it to an existing category or create a new
-        one, update the topology and category vocabulary.
-        Returns (category_id, sparse_vector_dict).
+        Embed the post, assign it to an existing category or buffer it
+        in the pending pool until enough similar posts accumulate.
+        Returns (category_id, sparse_vector_dict, sentiment_score).
+        category_id is -1 if the post is still pending.
         """
         cleaned = self._clean(text)
         dense, sparse_dict = self._vectorize(cleaned)
+        sent_score = self.sentiment.score(text)
 
         best_cat, best_sim = self._nearest_category(dense)
 
-        if best_cat is None or best_sim < self.similarity_threshold:
-            # Too different from everything we've seen — new category.
-            cat_id = self._next_id
-            self._next_id += 1
-        else:
+        if best_cat is not None and best_sim >= self.similarity_threshold:
+            # Matches an existing category — assign it
             cat_id = best_cat
+            self.topology.update(cat_id, dense)
+            self._learn_words(cat_id, cleaned)
+        else:
+            # Doesn't match any category. Add to pending and try to
+            # form a new category from the pending pool.
+            self._pending.append((post_id, dense, cleaned))
+            cat_id = self._try_form_category_from_pending()
 
-        # Online update of the category centroid + post count
-        self.topology.update(cat_id, dense)
-        self._learn_words(cat_id, cleaned)
+            if cat_id == -1:
+                # Still pending — not enough similar posts yet
+                self._post_count += 1
+                return -1, sparse_dict, sent_score
 
         self._post_count += 1
         if self._post_count % self.rebuild_every == 0:
             self.topology.rebuild_relations(None)
 
-        return cat_id, sparse_dict
+        return cat_id, sparse_dict, sent_score
+
+    def _try_form_category_from_pending(self):
+        """
+        Check if any cluster of pending posts has reached
+        min_posts_for_category. If so, create a real category
+        from them, then absorb any other pending posts that now match.
+        """
+        if len(self._pending) < self.min_posts_for_category:
+            return -1
+
+        # Try to cluster pending posts: for each pending post,
+        # find how many other pending posts are similar to it.
+        n = len(self._pending)
+        for i in range(n):
+            _, vec_i, _ = self._pending[i]
+            ni = np.linalg.norm(vec_i)
+            if ni == 0:
+                continue
+
+            cluster_indices = [i]
+            for j in range(n):
+                if j == i:
+                    continue
+                _, vec_j, _ = self._pending[j]
+                nj = np.linalg.norm(vec_j)
+                if nj == 0:
+                    continue
+                sim = float(np.dot(vec_i, vec_j) / (ni * nj))
+                if sim >= self.similarity_threshold:
+                    cluster_indices.append(j)
+
+            if len(cluster_indices) >= self.min_posts_for_category:
+                # Form a new category from this cluster
+                cat_id = self._next_id
+                self._next_id += 1
+
+                for idx in cluster_indices:
+                    _, vec, cleaned = self._pending[idx]
+                    self.topology.update(cat_id, vec)
+                    self._learn_words(cat_id, cleaned)
+
+                # Remove clustered posts from pending (in reverse order)
+                for idx in sorted(cluster_indices, reverse=True):
+                    self._pending.pop(idx)
+
+                # Now re-check remaining pending posts against the new category
+                self._absorb_pending_into_categories()
+
+                return cat_id
+
+        return -1
+
+    def _absorb_pending_into_categories(self):
+        """
+        After forming a new category, check if any remaining pending
+        posts now match an existing category. Absorb them if so.
+        """
+        still_pending = []
+        for post_id, dense, cleaned in self._pending:
+            best_cat, best_sim = self._nearest_category(dense)
+            if best_cat is not None and best_sim >= self.similarity_threshold:
+                self.topology.update(best_cat, dense)
+                self._learn_words(best_cat, cleaned)
+            else:
+                still_pending.append((post_id, dense, cleaned))
+        self._pending = still_pending
 
     # ------------------------------------------------------------------
     def _learn_words(self, cat_id, cleaned):
