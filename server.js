@@ -736,8 +736,13 @@ app.get("/global-feed", async (req, res) => {
   const diverseFeed = [];
   let lastUserId = null;
 
+  // Reserve ~20% of the feed for exploration posts from similar categories
+  const exploreSlots = Math.max(2, Math.floor(limit * 0.2));
+  const mainSlots = limit - exploreSlots;
+
+  // Main feed: top scored posts
   for (const p of scored) {
-    if (diverseFeed.length >= limit) break;
+    if (diverseFeed.length >= mainSlots) break;
 
     const count = userCount[p.userId] || 0;
     if (count >= 2) continue;            // max 2 posts per user
@@ -748,7 +753,73 @@ app.get("/global-feed", async (req, res) => {
     diverseFeed.push(p);
   }
 
-  const finalPosts = diverseFeed;
+  // Exploration: find categories similar to what the user likes and pull
+  // posts from those categories. These get a lower score so they appear
+  // less prominently, but they let the user discover adjacent content.
+  const explorePosts = [];
+  const userTopCats = db().prepare(
+    'SELECT category_id FROM user_interests WHERE userId = ? AND score > 0.1 ORDER BY score DESC LIMIT 5'
+  ).all(req.user.id).map(r => r.category_id);
+
+  if (userTopCats.length > 0) {
+    // Get similar categories from the recommender's topology data
+    let similarCats = [];
+    try {
+      const catRes = await fetch(`${RECOMMENDER_URL}/categories`);
+      const catData = await catRes.json();
+      for (const topCat of userTopCats) {
+        const info = catData[String(topCat)];
+        if (info && info.similar_to) {
+          for (const sim of info.similar_to) {
+            if (!userTopCats.includes(sim.category) && sim.similarity > 0.01) {
+              similarCats.push(sim.category);
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    similarCats = [...new Set(similarCats)];
+
+    if (similarCats.length > 0) {
+      const seenPostIds = new Set(diverseFeed.map(p => p.id));
+      const simPH = similarCats.map(() => '?').join(',');
+      const simPosts = db().prepare(`
+        SELECT posts.*, users.username, users.profilePic
+        FROM posts
+        JOIN users ON posts.userId = users.id
+        WHERE posts.category_id IN (${simPH})
+          AND posts.userId != ?
+          AND posts.deleted = 0
+          AND posts.spam_score < 0.9
+        ORDER BY posts.timestamp DESC
+        LIMIT 20
+      `).all(...similarCats, req.user.id);
+
+      for (const p of simPosts) {
+        if (explorePosts.length >= exploreSlots) break;
+        if (seenPostIds.has(p.id)) continue;
+        const count = userCount[p.userId] || 0;
+        if (count >= 2) continue;
+        userCount[p.userId] = count + 1;
+        explorePosts.push({ ...p, _score: 0, _explore: true });
+      }
+    }
+  }
+
+  // Interleave exploration posts into the main feed (every 4th-5th slot)
+  const finalPosts = [];
+  let ei = 0;
+  for (let i = 0; i < diverseFeed.length; i++) {
+    finalPosts.push(diverseFeed[i]);
+    if ((i + 1) % 4 === 0 && ei < explorePosts.length) {
+      finalPosts.push(explorePosts[ei++]);
+    }
+  }
+  // Append any remaining exploration posts
+  while (ei < explorePosts.length) {
+    finalPosts.push(explorePosts[ei++]);
+  }
 
   // Record these posts as "seen" for future penalty
   const seenNow = Date.now();

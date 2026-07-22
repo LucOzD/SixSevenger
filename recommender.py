@@ -98,7 +98,13 @@ class CategoryTopology:
                         str(feature_names[i]) for i in top_b_idx if i < len(feature_names)
                     ]
 
-    def get_similar_categories(self, cat_id, n=5, min_similarity=0.05):
+    def get_similar_categories(self, cat_id, n=5, min_similarity=0.01):
+        """Return categories similar to cat_id. Always recomputes if needed."""
+        # If this category has no similarity data yet, force a rebuild
+        has_data = any(a == cat_id for (a, _) in self.similarities)
+        if not has_data and len(self.centroids) >= 2:
+            self.rebuild_relations(None)
+
         scores = {}
         for (a, b), sim in self.similarities.items():
             if a == cat_id and sim >= min_similarity:
@@ -313,6 +319,10 @@ class PostAnalyser:
                 # Remove clustered posts from pending (in reverse order)
                 for idx in sorted(cluster_indices, reverse=True):
                     self._pending.pop(idx)
+
+                # Rebuild all pairwise similarities so the new category
+                # immediately knows what it's similar to
+                self.topology.rebuild_relations(None)
 
                 # Now re-check remaining pending posts against the new category
                 self._absorb_pending_into_categories()
