@@ -711,20 +711,20 @@ app.get("/global-feed", async (req, res) => {
     const spamFactor     = 1 - (p.spam_score || 0);
     const engagementBoost = engagementMap[p.id] || 0;
 
-    // RECENCY: strong time-based boost. Posts < 1hr get major boost,
-    // < 6hr moderate, < 24hr mild. Older posts decay quickly.
+    // RECENCY: mild tiebreaker, not a dominant signal.
+    // Proven-liked content should dominate; newness just nudges order.
     const ageMs    = now - p.timestamp;
     const ageHours = ageMs / (1000 * 60 * 60);
     let recency;
-    if (ageHours < 1)       recency = 1.0;
-    else if (ageHours < 6)  recency = 0.7;
-    else if (ageHours < 24) recency = 0.4;
-    else if (ageHours < 72) recency = 0.15;
-    else                    recency = 0.05;
+    if (ageHours < 1)       recency = 0.15;
+    else if (ageHours < 6)  recency = 0.10;
+    else if (ageHours < 24) recency = 0.06;
+    else if (ageHours < 72) recency = 0.03;
+    else                    recency = 0.01;
 
-    // Final score: recency is a major factor, multiplied by relevance
+    // Final score: relevance dominates (80%), recency is a tiebreaker (20%)
     const relevance = Math.max(0.01, catScore) * spamFactor + engagementBoost;
-    const score = (relevance * 0.4 + recency * 0.6);
+    const score = (relevance * 0.8 + recency * 0.2);
 
     return { ...p, _score: score };
   });
@@ -736,8 +736,8 @@ app.get("/global-feed", async (req, res) => {
   const diverseFeed = [];
   let lastUserId = null;
 
-  // Reserve ~20% of the feed for exploration posts from similar categories
-  const exploreSlots = Math.max(2, Math.floor(limit * 0.2));
+  // Reserve ~10% of the feed for exploration posts from similar categories
+  const exploreSlots = Math.max(1, Math.floor(limit * 0.1));
   const mainSlots = limit - exploreSlots;
 
   // Main feed: top scored posts
@@ -807,12 +807,12 @@ app.get("/global-feed", async (req, res) => {
     }
   }
 
-  // Interleave exploration posts into the main feed (every 4th-5th slot)
+  // Interleave exploration posts into the main feed (every 8th slot)
   const finalPosts = [];
   let ei = 0;
   for (let i = 0; i < diverseFeed.length; i++) {
     finalPosts.push(diverseFeed[i]);
-    if ((i + 1) % 4 === 0 && ei < explorePosts.length) {
+    if ((i + 1) % 8 === 0 && ei < explorePosts.length) {
       finalPosts.push(explorePosts[ei++]);
     }
   }
