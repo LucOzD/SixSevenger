@@ -679,12 +679,13 @@ app.get("/global-feed", async (req, res) => {
 
   const now = Date.now();
 
-  // Exclude posts already served recently (< 1 hour) — forces fresh content
-  // on every scroll rather than re-scoring the same posts.
+  // Exclude posts seen in the last 5 MINUTES (not 1 hour) for this session.
+  // This prevents the same posts from appearing on immediate re-scroll,
+  // but doesn't starve the feed on subsequent page loads.
   const recentlySeen = db().prepare(`
     SELECT postId FROM feed_seen
     WHERE userId = ? AND seenAt > ?
-  `).all(req.user.id, now - 60 * 60 * 1000).map(r => r.postId);
+  `).all(req.user.id, now - 5 * 60 * 1000).map(r => r.postId);
 
   const excludeClause = recentlySeen.length > 0
     ? `AND posts.id NOT IN (${recentlySeen.map(() => '?').join(',')})`
@@ -739,6 +740,30 @@ app.get("/global-feed", async (req, res) => {
       ORDER BY posts.timestamp DESC
       LIMIT 200
     `).all(...relevantIds, req.user.id, ...excludeParams);
+
+    // BACKFILL: if relevant accounts didn't produce enough posts,
+    // pull from all users to guarantee the feed is never empty.
+    if (posts.length < limit) {
+      const existingIds = new Set(posts.map(p => p.id));
+      const backfill = db().prepare(`
+        SELECT posts.*, users.username, users.profilePic
+        FROM posts
+        JOIN users ON posts.userId = users.id
+        WHERE posts.userId != ?
+          AND posts.deleted = 0
+          AND posts.spam_score < 0.9
+          ${excludeClause}
+        ORDER BY posts.timestamp DESC
+        LIMIT 200
+      `).all(req.user.id, ...excludeParams);
+      for (const p of backfill) {
+        if (!existingIds.has(p.id)) {
+          posts.push(p);
+          existingIds.add(p.id);
+        }
+        if (posts.length >= 200) break;
+      }
+    }
   } else {
     posts = db().prepare(`
       SELECT posts.*, users.username, users.profilePic
@@ -788,7 +813,8 @@ app.get("/global-feed", async (req, res) => {
     return { ...p, _score: score };
   });
 
-  // Sort by score, then enforce diversity: max 2 posts per user, never adjacent
+  // Sort by score, then enforce diversity: max 2 posts per user, prefer
+  // not adjacent but don't let it starve the feed.
   scored.sort((a, b) => b._score - a._score);
 
   const userCount = {};    // userId -> how many posts picked so far
@@ -799,17 +825,31 @@ app.get("/global-feed", async (req, res) => {
   const exploreSlots = Math.max(1, Math.floor(limit * 0.1));
   const mainSlots = limit - exploreSlots;
 
-  // Main feed: top scored posts
+  // First pass: diversity-enforced (max 2 per user, no adjacent same user)
   for (const p of scored) {
     if (diverseFeed.length >= mainSlots) break;
 
     const count = userCount[p.userId] || 0;
     if (count >= 2) continue;            // max 2 posts per user
-    if (p.userId === lastUserId) continue; // never back-to-back same user
+    if (p.userId === lastUserId) continue; // prefer not back-to-back
 
     userCount[p.userId] = count + 1;
     lastUserId = p.userId;
     diverseFeed.push(p);
+  }
+
+  // Second pass: if feed is still short, relax the adjacent rule
+  if (diverseFeed.length < mainSlots) {
+    for (const p of scored) {
+      if (diverseFeed.length >= mainSlots) break;
+      if (diverseFeed.some(f => f.id === p.id)) continue; // already included
+
+      const count = userCount[p.userId] || 0;
+      if (count >= 3) continue; // slightly relaxed cap
+
+      userCount[p.userId] = count + 1;
+      diverseFeed.push(p);
+    }
   }
 
   // Exploration: find categories similar to what the user likes and pull
