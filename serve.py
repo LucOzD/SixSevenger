@@ -81,9 +81,19 @@ def ranked_categories():
     # ranking stateless and recomputed on every page refresh.
     direct_scores = data.get('direct_scores')
     collaborative = data.get('collaborative')
+    user_sentiment_pref = data.get('user_sentiment_pref')
+
+    # Build category sentiment map from the analyser
+    category_sentiments = {str(k): v for k, v in analyser.category_sentiment.items()}
+
     if direct_scores:
-        ranked = profiler.rank_from_scores(direct_scores, analyser.topology,
-                                           collaborative=collaborative, n=30)
+        ranked = profiler.rank_from_scores(
+            direct_scores, analyser.topology,
+            collaborative=collaborative,
+            category_sentiments=category_sentiments,
+            user_sentiment_pref=user_sentiment_pref,
+            n=30
+        )
     else:
         ranked = profiler.get_ranked_categories(user_id, analyser.topology, n=30)
 
@@ -105,8 +115,9 @@ def categories():
             'description':  analyser.describe(cat_id),
             'post_count':   analyser.topology.n_posts.get(cat_id, 0),
             'sentiment':    SentimentLexicon.label(
-                               analyser.sentiment.score(analyser.describe(cat_id))
+                               analyser.get_category_sentiment(cat_id)
                            ),
+            'sentiment_score': round(analyser.get_category_sentiment(cat_id), 3),
             'similar_to':   [
                 {
                     'category':    int(sim_id),

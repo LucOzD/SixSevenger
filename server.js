@@ -145,11 +145,46 @@ async function getRankedCategoryScores(userId) {
     }
   }
 
+  // User sentiment preference: avg sentiment of posts the user LIKED per category.
+  // This tells the ranker "in GD category, user prefers positive posts" so it
+  // can penalise similar categories with opposite sentiment.
+  const userSentPref = {};
+  const likedPostSent = db().prepare(`
+    SELECT p.category_id, AVG(p.sentiment) AS avgSent
+    FROM likes l
+    JOIN posts p ON l.postId = p.id
+    WHERE l.userId = ? AND l.value = 1 AND p.category_id != -1
+    GROUP BY p.category_id
+  `).all(userId);
+  for (const r of likedPostSent) {
+    userSentPref[r.category_id] = r.avgSent;
+  }
+  // Also factor in sentiment of own posts
+  const ownPostSent = db().prepare(`
+    SELECT category_id, AVG(sentiment) AS avgSent
+    FROM posts
+    WHERE userId = ? AND category_id != -1 AND deleted = 0
+    GROUP BY category_id
+  `).all(userId);
+  for (const r of ownPostSent) {
+    // Blend with liked posts if exists, otherwise use own
+    if (userSentPref[r.category_id] !== undefined) {
+      userSentPref[r.category_id] = (userSentPref[r.category_id] + r.avgSent) / 2;
+    } else {
+      userSentPref[r.category_id] = r.avgSent;
+    }
+  }
+
   try {
     const res = await fetch(`${RECOMMENDER_URL}/ranked-categories`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId, direct_scores: direct, collaborative }),
+      body: JSON.stringify({
+        user_id: userId,
+        direct_scores: direct,
+        collaborative,
+        user_sentiment_pref: userSentPref,
+      }),
     });
     const data = await res.json();
     return Object.fromEntries(data.ranked.map(([c, s]) => [c, s]));

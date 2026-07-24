@@ -202,6 +202,10 @@ class PostAnalyser:
         # Basic sentiment lexicon
         self.sentiment = SentimentLexicon()
 
+        # Track average sentiment per category (running mean)
+        self.category_sentiment = {}  # cat_id -> float (-1 to 1)
+        self._sentiment_counts  = defaultdict(int)
+
     # ------------------------------------------------------------------
     def _clean(self, text):
         text = text.lower()
@@ -259,6 +263,7 @@ class PostAnalyser:
             cat_id = best_cat
             self.topology.update(cat_id, dense)
             self._learn_words(cat_id, cleaned)
+            self._update_category_sentiment(cat_id, sent_score)
         else:
             # Doesn't match any category. Add to pending and try to
             # form a new category from the pending pool.
@@ -315,6 +320,8 @@ class PostAnalyser:
                     _, vec, cleaned = self._pending[idx]
                     self.topology.update(cat_id, vec)
                     self._learn_words(cat_id, cleaned)
+                    # Score sentiment from the raw-ish cleaned text
+                    self._update_category_sentiment(cat_id, self.sentiment.score(cleaned))
 
                 # Remove clustered posts from pending (in reverse order)
                 for idx in sorted(cluster_indices, reverse=True):
@@ -353,6 +360,21 @@ class PostAnalyser:
             if len(w) > 1 and w not in ENGLISH_STOP_WORDS:
                 counts[w] += 1
         self.category_words[cat_id] = [w for w, _ in counts.most_common(10)]
+
+    def _update_category_sentiment(self, cat_id, sent_score):
+        """Online running average of sentiment for a category."""
+        n = self._sentiment_counts[cat_id]
+        if cat_id not in self.category_sentiment:
+            self.category_sentiment[cat_id] = sent_score
+        else:
+            self.category_sentiment[cat_id] = (
+                self.category_sentiment[cat_id] * n + sent_score
+            ) / (n + 1)
+        self._sentiment_counts[cat_id] += 1
+
+    def get_category_sentiment(self, cat_id):
+        """Return avg sentiment for a category. 0.0 if unknown."""
+        return self.category_sentiment.get(cat_id, 0.0)
 
     def describe(self, cat_id):
         words = self.category_words.get(int(cat_id), [])
@@ -492,17 +514,15 @@ class UserProfiler:
 
         return sorted(scores.items(), key=lambda x: x[1], reverse=True)[:n]
 
-    def rank_from_scores(self, direct_scores, topology, collaborative=None, n=30):
+    def rank_from_scores(self, direct_scores, topology, collaborative=None,
+                         category_sentiments=None, user_sentiment_pref=None, n=30):
         """
-        Stateless ranking. Given a map of {category_id: score} computed
-        fresh from the database (posts authored + likes - dislikes +
-        comments), apply the same topology boosting, dislike penalties
-        and directional alignment as get_ranked_categories — but without
-        relying on any in-memory profile. This lets the feed recompute
-        recommendations from scratch on every page load.
+        Stateless ranking with sentiment awareness.
 
-        collaborative: optional {category_id: score} from users with
-        similar taste profiles — adds a "people like you also liked" boost.
+        category_sentiments: {cat_id: avg_sentiment} from the analyser.
+        user_sentiment_pref: {cat_id: avg_sentiment_of_posts_user_liked_in_this_cat}
+          If the user's liked posts in a category are positive, similar categories
+          with negative sentiment get penalised, and vice versa.
         """
         direct = {int(k): float(v) for k, v in direct_scores.items()}
         all_cats = set(topology.centroids.keys()) | set(direct.keys())
@@ -512,7 +532,6 @@ class UserProfiler:
         if collaborative:
             for cat, collab_score in collaborative.items():
                 cat_int = int(cat)
-                # Weighted at 30% of the collaborative signal
                 scores[cat_int] = scores.get(cat_int, 0.01) + float(collab_score) * 0.3
 
         # Build the user's aggregate interest / dislike directions from
@@ -540,6 +559,28 @@ class UserProfiler:
                 penalty = abs(disliked_score) * sim_score * 0.4
                 scores[sim_cat] = scores.get(sim_cat, 0.01) - penalty
 
+        # SENTIMENT PENALTY: if a category is topically similar to one the
+        # user likes but has OPPOSITE sentiment, penalise it. E.g. user likes
+        # "love geometry dash" (positive) → "hate geometry dash" (negative)
+        # shares keywords but should be pushed down.
+        if category_sentiments and user_sentiment_pref:
+            for liked_cat, liked_score in direct.items():
+                if liked_score <= 0:
+                    continue
+                user_sent = user_sentiment_pref.get(str(liked_cat), 0)
+                if abs(user_sent) < 0.1:
+                    continue  # neutral preference, skip
+
+                for sim_cat, sim_score in topology.get_similar_categories(liked_cat, n=8):
+                    cat_sent = category_sentiments.get(str(sim_cat), 0)
+                    # Check if sentiments are opposite
+                    # user likes positive → sim_cat is negative (or vice versa)
+                    sent_diff = user_sent * cat_sent  # negative if opposite
+                    if sent_diff < -0.05:
+                        # Opposite sentiment on same topic — penalise proportionally
+                        penalty = abs(sent_diff) * sim_score * liked_score * 0.6
+                        scores[sim_cat] = scores.get(sim_cat, 0.01) - penalty
+
         # Directional alignment against the user's overall taste vector
         if interest is not None:
             int_norm = np.linalg.norm(interest)
@@ -550,7 +591,6 @@ class UserProfiler:
                     c_norm = np.linalg.norm(c)
                     if c_norm > 0:
                         alignment = float(np.dot(interest_n, c / c_norm))
-                        # keep the sign of the existing score, scale magnitude
                         factor = max(0.05, (alignment + 1) / 2)
                         scores[cat_id] = scores.get(cat_id, 0.01) * factor
 
