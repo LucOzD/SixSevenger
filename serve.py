@@ -28,8 +28,9 @@ def categorise():
     data    = request.json
     text    = data.get('text', '')
     post_id = data.get('post_id')
+    author_context = data.get('author_context')  # optional
 
-    cat_id, post_vec, sentiment = analyser.add_post(post_id, text)
+    cat_id, post_vec, sentiment = analyser.add_post(post_id, text, author_context=author_context)
     hashtags = analyser.extract_hashtags(text)
 
     # Persist periodically so newly discovered categories survive a restart

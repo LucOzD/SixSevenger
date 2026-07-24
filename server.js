@@ -39,10 +39,34 @@ function recordCategoryScore(userId, categoryId, delta) {
 
 async function categorisePost(postId, text, authorId) {
   try {
+    // Build author context: avg sentiment + top categories of their existing posts.
+    // Helps the recommender resolve ambiguous posts by looking at the author's history.
+    let authorContext = null;
+    if (authorId) {
+      const authorPosts = db().prepare(`
+        SELECT category_id, sentiment FROM posts
+        WHERE userId = ? AND deleted = 0 AND category_id != -1
+      `).all(authorId);
+
+      if (authorPosts.length > 0) {
+        const avgSent = authorPosts.reduce((sum, p) => sum + (p.sentiment || 0), 0) / authorPosts.length;
+        const catCounts = {};
+        for (const p of authorPosts) {
+          catCounts[p.category_id] = (catCounts[p.category_id] || 0) + 1;
+        }
+        const topCategories = Object.entries(catCounts)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5)
+          .map(([id]) => parseInt(id));
+
+        authorContext = { avg_sentiment: avgSent, top_categories: topCategories };
+      }
+    }
+
     const res = await fetch(`${RECOMMENDER_URL}/categorise`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ post_id: postId, text }),
+      body: JSON.stringify({ post_id: postId, text, author_context: authorContext }),
     });
     const data = await res.json();
     if (data.category_id !== undefined && data.category_id !== -1) {

@@ -245,20 +245,50 @@ class PostAnalyser:
         return best_cat, best_sim
 
     # ------------------------------------------------------------------
-    def add_post(self, post_id, text):
+    def add_post(self, post_id, text, author_context=None):
         """
         Embed the post, assign it to an existing category or buffer it
         in the pending pool until enough similar posts accumulate.
+
+        author_context (optional): {
+            'avg_sentiment': float,    # average sentiment of author's other posts
+            'top_categories': [int],   # categories the author posts in most
+        }
+        When a post's sentiment is ambiguous (near 0), the author's historical
+        sentiment is blended in. Also used to bias category assignment toward
+        categories the author already posts in.
+
         Returns (category_id, sparse_vector_dict, sentiment_score).
         category_id is -1 if the post is still pending.
         """
         cleaned = self._clean(text)
         dense, sparse_dict = self._vectorize(cleaned)
-        sent_score = self.sentiment.score(text)
+        raw_sent = self.sentiment.score(text)
+
+        # Blend author context into sentiment when the post itself is ambiguous.
+        # VADER compound near 0 means it can't tell — lean on author history.
+        sent_score = raw_sent
+        if author_context and abs(raw_sent) < 0.3:
+            author_avg = author_context.get('avg_sentiment', 0)
+            # Blend: 40% author history, 60% post's own score when ambiguous
+            blend_weight = 0.4 * (1 - abs(raw_sent) / 0.3)  # stronger blend the more neutral
+            sent_score = raw_sent * (1 - blend_weight) + author_avg * blend_weight
 
         best_cat, best_sim = self._nearest_category(dense)
 
-        if best_cat is not None and best_sim >= self.similarity_threshold:
+        # If the post is borderline (similarity close to threshold) and the
+        # author already posts in a specific category, bias toward that category.
+        if author_context and best_cat is not None:
+            author_cats = author_context.get('top_categories', [])
+            if best_cat in author_cats:
+                # Lower the bar slightly — author consistency is a signal
+                effective_threshold = self.similarity_threshold * 0.8
+            else:
+                effective_threshold = self.similarity_threshold
+        else:
+            effective_threshold = self.similarity_threshold
+
+        if best_cat is not None and best_sim >= effective_threshold:
             # Matches an existing category — assign it
             cat_id = best_cat
             self.topology.update(cat_id, dense)
