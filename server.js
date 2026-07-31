@@ -952,7 +952,13 @@ app.get("/global-feed", async (req, res) => {
 // ---------------------------------------------------------
 // HASHTAG LOOKUP
 // ---------------------------------------------------------
-app.get("/hashtag/:tag", (req, res) => {
+app.get("/hashtag/:tag", async (req, res) => {
+  // If browser navigation (wants HTML), render the page
+  if (req.headers.accept && req.headers.accept.includes('text/html') && !req.headers['x-requested-with']) {
+    return res.render('hashtag', { user: req.user });
+  }
+
+  // Otherwise serve JSON API
   const tag = req.params.tag.toLowerCase().replace(/^#/, '');
 
   const hashtagInfo = db().prepare('SELECT * FROM hashtags WHERE tag = ?').get(tag);
@@ -979,7 +985,46 @@ app.get("/hashtag/:tag", (req, res) => {
     return { ...p, likes: counts.likes || 0, dislikes: counts.dislikes || 0, userVote: userVoteRow ? userVoteRow.value : 0 };
   });
 
-  res.json({ tag, category_id: hashtagInfo?.category_id ?? -1, post_count: hashtagInfo?.post_count ?? 0, posts: enriched });
+  // Find similar hashtags:
+  // 1. Other hashtags in the same category
+  // 2. Hashtags in categories similar to this one (from topology)
+  let similarHashtags = [];
+  const catId = hashtagInfo?.category_id ?? -1;
+
+  if (catId !== -1) {
+    // Same category
+    const sameCat = db().prepare(
+      'SELECT tag, post_count FROM hashtags WHERE category_id = ? AND tag != ? ORDER BY post_count DESC LIMIT 10'
+    ).all(catId, tag);
+    similarHashtags.push(...sameCat.map(h => ({ tag: h.tag, post_count: h.post_count, reason: 'same category' })));
+
+    // Similar categories — get from recommender
+    try {
+      const catRes = await fetch(`${RECOMMENDER_URL}/categories`);
+      const catData = await catRes.json();
+      const info = catData[String(catId)];
+      if (info && info.similar_to) {
+        const simCatIds = info.similar_to.map(s => s.category);
+        if (simCatIds.length > 0) {
+          const ph = simCatIds.map(() => '?').join(',');
+          const simCatHashtags = db().prepare(
+            `SELECT tag, post_count, category_id FROM hashtags WHERE category_id IN (${ph}) AND tag != ? ORDER BY post_count DESC LIMIT 10`
+          ).all(...simCatIds, tag);
+          similarHashtags.push(...simCatHashtags.map(h => ({ tag: h.tag, post_count: h.post_count, reason: 'similar topic' })));
+        }
+      }
+    } catch (_) {}
+  }
+
+  // Deduplicate
+  const seen = new Set();
+  similarHashtags = similarHashtags.filter(h => {
+    if (seen.has(h.tag)) return false;
+    seen.add(h.tag);
+    return true;
+  }).slice(0, 15);
+
+  res.json({ tag, category_id: catId, post_count: hashtagInfo?.post_count ?? 0, posts: enriched, similar_hashtags: similarHashtags });
 });
 
 // ---------------------------------------------------------
@@ -1280,15 +1325,6 @@ app.get('/post-details/:id', (req, res) => {
 
 app.get('/view-post/:id', (req, res) => {
   res.render('post', { user: req.user });
-});
-
-app.get('/hashtag/:tag', (req, res, next) => {
-  // If it's an API request (from fetch) the route above handles it.
-  // This renders the page for direct browser navigation.
-  if (req.headers.accept && req.headers.accept.includes('text/html')) {
-    return res.render('hashtag', { user: req.user });
-  }
-  next();
 });
 
 // ---------------------------------------------------------

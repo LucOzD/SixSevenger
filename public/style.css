@@ -537,3 +537,25 @@ button.submit-btn:hover {
   color: #666;
   font-size: 14px;
 }
+
+
+/* SIMILAR HASHTAGS */
+.similar-hashtags {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.similar-label {
+  font-size: 13px;
+  color: #888;
+}
+
+.similar-tag {
+  font-size: 13px;
+  padding: 3px 8px;
+  background: #eef5ff;
+  border-radius: 12px;
+}
