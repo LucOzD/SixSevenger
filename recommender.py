@@ -175,7 +175,7 @@ class PostAnalyser:
     """
 
     def __init__(self, similarity_threshold=0.12, n_features=4096,
-                 rebuild_every=25, min_posts_for_category=2):
+                 rebuild_every=25):
         self.n_features = n_features
         self.vectorizer = HashingVectorizer(
             n_features=n_features,
@@ -185,7 +185,6 @@ class PostAnalyser:
             norm='l2',
         )
         self.similarity_threshold = similarity_threshold
-        self.min_posts_for_category = min_posts_for_category
         self.rebuild_every        = rebuild_every
 
         self.topology       = CategoryTopology()   # owns the centroids
@@ -194,17 +193,16 @@ class PostAnalyser:
         self._next_id        = 0
         self._post_count     = 0
 
-        # Pending posts: vectors that didn't match any existing category.
-        # They wait here until enough similar posts accumulate to form
-        # a real category (min_posts_for_category).
-        self._pending = []  # [(post_id, dense_vector, cleaned_text)]
-
-        # Basic sentiment lexicon
-        self.sentiment = SentimentLexicon()
-
         # Track average sentiment per category (running mean)
         self.category_sentiment = {}  # cat_id -> float (-1 to 1)
         self._sentiment_counts  = defaultdict(int)
+
+        # Categories split when they grow large and internally diverse
+        self._split_threshold   = 15  # check for split after this many posts
+        self._category_posts    = defaultdict(list)  # cat_id -> [dense vectors]
+
+        # Sentiment analyser
+        self.sentiment = SentimentLexicon()
 
     # ------------------------------------------------------------------
     def _clean(self, text):
@@ -247,141 +245,169 @@ class PostAnalyser:
     # ------------------------------------------------------------------
     def add_post(self, post_id, text, author_context=None):
         """
-        Embed the post, assign it to an existing category or buffer it
-        in the pending pool until enough similar posts accumulate.
+        Embed the post and ALWAYS assign it to a category.
+        Categories start broad and split as they grow.
 
-        author_context (optional): {
-            'avg_sentiment': float,    # average sentiment of author's other posts
-            'top_categories': [int],   # categories the author posts in most
-        }
-        When a post's sentiment is ambiguous (near 0), the author's historical
-        sentiment is blended in. Also used to bias category assignment toward
-        categories the author already posts in.
+        Logic:
+        1. If the post matches an existing category well → assign it.
+        2. If it partially matches → assign to best match (broad categories).
+        3. If no categories exist or nothing is remotely close → create a new one.
+        4. After assignment, check if the category should split.
 
         Returns (category_id, sparse_vector_dict, sentiment_score).
-        category_id is -1 if the post is still pending.
+        Never returns -1; every post gets a category.
         """
         cleaned = self._clean(text)
         dense, sparse_dict = self._vectorize(cleaned)
         raw_sent = self.sentiment.score(text)
 
         # Blend author context into sentiment when the post itself is ambiguous.
-        # VADER compound near 0 means it can't tell — lean on author history.
         sent_score = raw_sent
         if author_context and abs(raw_sent) < 0.3:
             author_avg = author_context.get('avg_sentiment', 0)
-            # Blend: 40% author history, 60% post's own score when ambiguous
-            blend_weight = 0.4 * (1 - abs(raw_sent) / 0.3)  # stronger blend the more neutral
+            blend_weight = 0.4 * (1 - abs(raw_sent) / 0.3)
             sent_score = raw_sent * (1 - blend_weight) + author_avg * blend_weight
 
         best_cat, best_sim = self._nearest_category(dense)
 
-        # If the post is borderline (similarity close to threshold) and the
-        # author already posts in a specific category, bias toward that category.
+        # Author bias: lower threshold if author posts in that category
         if author_context and best_cat is not None:
             author_cats = author_context.get('top_categories', [])
             if best_cat in author_cats:
-                # Lower the bar slightly — author consistency is a signal
-                effective_threshold = self.similarity_threshold * 0.8
+                effective_threshold = self.similarity_threshold * 0.75
             else:
                 effective_threshold = self.similarity_threshold
         else:
             effective_threshold = self.similarity_threshold
 
         if best_cat is not None and best_sim >= effective_threshold:
-            # Matches an existing category — assign it
+            # Good match → assign directly
             cat_id = best_cat
-            self.topology.update(cat_id, dense)
-            self._learn_words(cat_id, cleaned)
-            self._update_category_sentiment(cat_id, sent_score)
+        elif best_cat is not None and best_sim >= effective_threshold * 0.5:
+            # Partial match → still assign to best (broad category absorbs it)
+            cat_id = best_cat
         else:
-            # Doesn't match any category. Add to pending and try to
-            # form a new category from the pending pool.
-            self._pending.append((post_id, dense, cleaned))
-            cat_id = self._try_form_category_from_pending()
+            # Nothing remotely close → create a new category
+            cat_id = self._next_id
+            self._next_id += 1
 
-            if cat_id == -1:
-                # Still pending — not enough similar posts yet
-                self._post_count += 1
-                return -1, sparse_dict, sent_score
+        # Update the category with this post
+        self.topology.update(cat_id, dense)
+        self._learn_words(cat_id, cleaned)
+        self._update_category_sentiment(cat_id, sent_score)
+        self._category_posts[cat_id].append(dense)
 
         self._post_count += 1
         if self._post_count % self.rebuild_every == 0:
             self.topology.rebuild_relations(None)
 
+        # Check if this category has grown large enough to consider splitting
+        if self.topology.n_posts.get(cat_id, 0) >= self._split_threshold:
+            self._maybe_split_category(cat_id)
+
         return cat_id, sparse_dict, sent_score
 
-    def _try_form_category_from_pending(self):
+    def _maybe_split_category(self, cat_id):
         """
-        Check if any cluster of pending posts has reached
-        min_posts_for_category. If so, create a real category
-        from them, then absorb any other pending posts that now match.
-        """
-        if len(self._pending) < self.min_posts_for_category:
-            return -1
+        Check if a category has grown large and internally diverse enough
+        to split into two sub-categories. This is how categories start broad
+        and become more focused over time.
 
-        # Try to cluster pending posts: for each pending post,
-        # find how many other pending posts are similar to it.
-        n = len(self._pending)
-        for i in range(n):
-            _, vec_i, _ = self._pending[i]
-            ni = np.linalg.norm(vec_i)
-            if ni == 0:
+        Split condition: the average internal similarity (pairwise cosine
+        between posts in the category) drops below a threshold, meaning the
+        category has absorbed posts that are drifting apart.
+        """
+        posts = self._category_posts.get(cat_id, [])
+        if len(posts) < self._split_threshold:
+            return
+
+        # Only keep the last 30 posts for efficiency
+        posts = posts[-30:]
+        self._category_posts[cat_id] = posts
+
+        # Compute average internal similarity
+        n = len(posts)
+        if n < 6:
+            return
+
+        # Sample pairs for speed
+        sample_size = min(50, n * (n - 1) // 2)
+        sims = []
+        for _ in range(sample_size):
+            i, j = np.random.randint(0, n, 2)
+            if i == j:
                 continue
+            ni, nj = np.linalg.norm(posts[i]), np.linalg.norm(posts[j])
+            if ni > 0 and nj > 0:
+                sims.append(float(np.dot(posts[i], posts[j]) / (ni * nj)))
 
-            cluster_indices = [i]
-            for j in range(n):
-                if j == i:
-                    continue
-                _, vec_j, _ = self._pending[j]
-                nj = np.linalg.norm(vec_j)
-                if nj == 0:
-                    continue
-                sim = float(np.dot(vec_i, vec_j) / (ni * nj))
-                if sim >= self.similarity_threshold:
-                    cluster_indices.append(j)
+        if not sims:
+            return
 
-            if len(cluster_indices) >= self.min_posts_for_category:
-                # Form a new category from this cluster
-                cat_id = self._next_id
-                self._next_id += 1
+        avg_sim = np.mean(sims)
 
-                for idx in cluster_indices:
-                    _, vec, cleaned = self._pending[idx]
-                    self.topology.update(cat_id, vec)
-                    self._learn_words(cat_id, cleaned)
-                    # Score sentiment from the raw-ish cleaned text
-                    self._update_category_sentiment(cat_id, self.sentiment.score(cleaned))
+        # If internal similarity is still high, category is cohesive — don't split
+        if avg_sim > 0.25:
+            return
 
-                # Remove clustered posts from pending (in reverse order)
-                for idx in sorted(cluster_indices, reverse=True):
-                    self._pending.pop(idx)
+        # Split: use k=2 simple clustering (find two most distant posts as seeds)
+        # Find the two most different posts
+        min_sim = 1.0
+        seed_a, seed_b = 0, 1
+        for i in range(min(10, n)):
+            for j in range(i + 1, min(10, n)):
+                ni, nj = np.linalg.norm(posts[i]), np.linalg.norm(posts[j])
+                if ni > 0 and nj > 0:
+                    s = float(np.dot(posts[i], posts[j]) / (ni * nj))
+                    if s < min_sim:
+                        min_sim = s
+                        seed_a, seed_b = i, j
 
-                # Rebuild all pairwise similarities so the new category
-                # immediately knows what it's similar to
-                self.topology.rebuild_relations(None)
+        centroid_a = posts[seed_a].copy()
+        centroid_b = posts[seed_b].copy()
 
-                # Now re-check remaining pending posts against the new category
-                self._absorb_pending_into_categories()
-
-                return cat_id
-
-        return -1
-
-    def _absorb_pending_into_categories(self):
-        """
-        After forming a new category, check if any remaining pending
-        posts now match an existing category. Absorb them if so.
-        """
-        still_pending = []
-        for post_id, dense, cleaned in self._pending:
-            best_cat, best_sim = self._nearest_category(dense)
-            if best_cat is not None and best_sim >= self.similarity_threshold:
-                self.topology.update(best_cat, dense)
-                self._learn_words(best_cat, cleaned)
+        # Assign each post to closer seed
+        group_a, group_b = [], []
+        for p in posts:
+            pn = np.linalg.norm(p)
+            if pn == 0:
+                group_a.append(p)
+                continue
+            sim_a = float(np.dot(p, centroid_a) / (pn * np.linalg.norm(centroid_a))) if np.linalg.norm(centroid_a) > 0 else 0
+            sim_b = float(np.dot(p, centroid_b) / (pn * np.linalg.norm(centroid_b))) if np.linalg.norm(centroid_b) > 0 else 0
+            if sim_a >= sim_b:
+                group_a.append(p)
             else:
-                still_pending.append((post_id, dense, cleaned))
-        self._pending = still_pending
+                group_b.append(p)
+
+        # Only split if both groups have at least 3 posts
+        if len(group_a) < 3 or len(group_b) < 3:
+            return
+
+        # Keep cat_id for group_a (the larger one), create new for group_b
+        if len(group_b) > len(group_a):
+            group_a, group_b = group_b, group_a
+
+        new_cat_id = self._next_id
+        self._next_id += 1
+
+        # Rebuild centroid for the original category from group_a
+        self.topology.centroids[cat_id] = np.mean(group_a, axis=0)
+        self.topology.n_posts[cat_id] = len(group_a)
+        self._category_posts[cat_id] = group_a
+
+        # Create new category from group_b
+        self.topology.centroids[new_cat_id] = np.mean(group_b, axis=0)
+        self.topology.n_posts[new_cat_id] = len(group_b)
+        self._category_posts[new_cat_id] = group_b
+
+        # Rebuild words for new category (approximate from centroid)
+        # The word counts from the original category stay — not perfect but functional
+        self.category_words[new_cat_id] = []
+        self._word_counts[new_cat_id] = Counter()
+
+        # Rebuild relationships
+        self.topology.rebuild_relations(None)
 
     # ------------------------------------------------------------------
     def _learn_words(self, cat_id, cleaned):
