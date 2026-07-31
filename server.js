@@ -950,16 +950,15 @@ app.get("/global-feed", async (req, res) => {
 
 
 // ---------------------------------------------------------
-// HASHTAG LOOKUP
+// HASHTAG PAGE (HTML)
 // ---------------------------------------------------------
-app.get("/hashtag/:tag", async (req, res) => {
-  // Serve JSON only when explicitly requested via Accept header
-  const wantsJson = req.headers.accept && req.headers.accept.includes('application/json') && !req.headers.accept.includes('text/html');
-  if (!wantsJson) {
-    return res.render('hashtag', { user: req.user });
-  }
+app.get("/hashtag/:tag", (req, res) => {
+  res.render('hashtag', { user: req.user });
+});
 
-  // JSON API
+// HASHTAG API (JSON)
+// ---------------------------------------------------------
+app.get("/api/hashtag/:tag", async (req, res) => {
   const tag = req.params.tag.toLowerCase().replace(/^#/, '');
 
   const hashtagInfo = db().prepare('SELECT * FROM hashtags WHERE tag = ?').get(tag);
