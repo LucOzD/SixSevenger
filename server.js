@@ -953,13 +953,13 @@ app.get("/global-feed", async (req, res) => {
 // HASHTAG LOOKUP
 // ---------------------------------------------------------
 app.get("/hashtag/:tag", async (req, res) => {
-  // If this is a page navigation (not a fetch API call), render the EJS page
-  const isFetch = req.xhr || (req.headers.accept && req.headers.accept.includes('application/json'));
-  if (!isFetch) {
+  // Serve JSON only when explicitly requested via Accept header
+  const wantsJson = req.headers.accept && req.headers.accept.includes('application/json') && !req.headers.accept.includes('text/html');
+  if (!wantsJson) {
     return res.render('hashtag', { user: req.user });
   }
 
-  // Otherwise serve JSON API
+  // JSON API
   const tag = req.params.tag.toLowerCase().replace(/^#/, '');
 
   const hashtagInfo = db().prepare('SELECT * FROM hashtags WHERE tag = ?').get(tag);
