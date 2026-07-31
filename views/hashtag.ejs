@@ -35,7 +35,9 @@ async function loadHashtag() {
 
   document.getElementById('hashtagTitle').textContent = '#' + tag;
 
-  const res = await fetch('/hashtag/' + tag);
+  const res = await fetch('/hashtag/' + tag, {
+    headers: { 'Accept': 'application/json' }
+  });
   const data = await res.json();
 
   document.getElementById('hashtagMeta').textContent = data.post_count + ' posts';

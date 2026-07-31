@@ -953,8 +953,9 @@ app.get("/global-feed", async (req, res) => {
 // HASHTAG LOOKUP
 // ---------------------------------------------------------
 app.get("/hashtag/:tag", async (req, res) => {
-  // If browser navigation (wants HTML), render the page
-  if (req.headers.accept && req.headers.accept.includes('text/html') && !req.headers['x-requested-with']) {
+  // If this is a page navigation (not a fetch API call), render the EJS page
+  const isFetch = req.xhr || (req.headers.accept && req.headers.accept.includes('application/json'));
+  if (!isFetch) {
     return res.render('hashtag', { user: req.user });
   }
 
