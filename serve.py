@@ -10,7 +10,11 @@ from flask import Flask, request, jsonify
 from recommender import PostAnalyser, UserProfiler, SentimentLexicon
 
 app     = Flask(__name__)
-STATE   = 'recommender_state.pkl'
+
+# Model state lives in DATA_DIR so it survives restarts when deployed.
+# Defaults to the current folder for local development.
+DATA_DIR = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+STATE    = os.path.join(DATA_DIR, 'recommender_state.pkl')
 
 analyser = PostAnalyser.load(STATE) if os.path.exists(STATE) else PostAnalyser()
 profiler = UserProfiler()
@@ -157,8 +161,10 @@ def similar_posts():
 
 
 if __name__ == '__main__':
-    print(f'Recommender running on http://localhost:5001')
+    port = int(os.environ.get('RECOMMENDER_PORT', 5001))
+    print(f'Recommender running on http://localhost:{port}')
     print(f'State: {"loaded" if os.path.exists(STATE) else "fresh start"}')
     print(f'Categories discovered: {analyser.num_categories}')
     print(f'Similarity threshold:  {analyser.similarity_threshold}')
-    app.run(port=5001)
+    # 127.0.0.1 only — the recommender is internal, never exposed publicly.
+    app.run(host='127.0.0.1', port=port)

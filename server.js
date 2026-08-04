@@ -8,7 +8,13 @@ const fs = require('fs');
 const { initDb, getDb } = require('./db');
 
 const app = express();
-const PORT = 3000;
+
+// Port comes from the environment when deployed, 3000 locally.
+const PORT = process.env.PORT || 3000;
+
+// Directory for data that must survive restarts (database, uploads).
+// Deployed, this points at a mounted volume. Locally it's the project folder.
+const DATA_DIR = process.env.DATA_DIR || __dirname;
 
 // Helper to get db - it will be initialized before server starts
 function db() {
@@ -19,7 +25,7 @@ function db() {
 // RECOMMENDER — talks to the Python Flask service
 // Falls back silently if the service is not running yet
 // ---------------------------------------------------------
-const RECOMMENDER_URL = 'http://localhost:5001';
+const RECOMMENDER_URL = process.env.RECOMMENDER_URL || 'http://localhost:5001';
 
 // Weight given to a category when a user authors a post in it.
 // Posting about something is a strong signal of interest.
@@ -222,7 +228,7 @@ app.use(cookieParser());
 app.use(express.urlencoded({ extended: true }));
 
 // Profile pictures folder
-const picsFolder = path.join(__dirname, "profile_pics");
+const picsFolder = path.join(DATA_DIR, "profile_pics");
 if (!fs.existsSync(picsFolder)) fs.mkdirSync(picsFolder);
 const upload = multer({ dest: picsFolder });
 
@@ -1584,7 +1590,8 @@ app.post('/admin/recategorise', requireAdmin, async (req, res) => {
 // Start server with database initialization
 (async () => {
   await initDb();
-  app.listen(PORT, () => {
+  // Bind 0.0.0.0 so the server is reachable from outside a container.
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running at http://localhost:${PORT}`);
   });
 

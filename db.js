@@ -4,7 +4,10 @@ const path = require('path');
 
 let db = null;
 
-const dbPath = path.join(__dirname, 'database.db');
+// Database lives in DATA_DIR so it can sit on a persistent volume when
+// deployed. Defaults to the project folder for local development.
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+const dbPath = path.join(DATA_DIR, 'database.db');
 
 class DbWrapper {
   constructor(sqlDb) {
