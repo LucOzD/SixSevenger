@@ -1,0 +1,26 @@
+name = "sixsevenger-api"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+# ---------------------------------------------------------------------------
+# D1 database. The database_id below is a placeholder — replace it with the id
+# printed by:  npx wrangler d1 create sixsevenger
+# ---------------------------------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "sixsevenger"
+database_id = "REPLACE_WITH_YOUR_DATABASE_ID"
+
+[vars]
+# Origins allowed to call this API with credentials. A wildcard is not possible
+# here: browsers reject "*" when a request carries cookies, so each frontend
+# origin must be listed explicitly. Add your Pages URL once you know it.
+ALLOWED_ORIGINS = "http://localhost:8788,http://127.0.0.1:8788"
+
+# Session cookies use SameSite=None so they work across the Pages and Worker
+# domains, which also requires Secure (HTTPS). For local HTTP development set
+# this to "Lax" instead, otherwise the browser will drop the cookie.
+SESSION_SAMESITE = "None"
+
+[observability]
+enabled = true

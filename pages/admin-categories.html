@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Admin - All Categories</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    .admin-header { background: #1a1a2e; color: white; padding: 16px 20px; margin-bottom: 20px; border-radius: 8px; }
+    .admin-header h1 { margin: 0; font-size: 22px; }
+    .cat-card { background: white; padding: 16px 20px; border-radius: 8px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .cat-card h3 { margin: 0 0 6px 0; font-size: 16px; }
+    .cat-card .words { color: #555; font-size: 14px; margin-bottom: 8px; }
+    .cat-card .meta { font-size: 12px; color: #888; }
+    .similar-list { margin-top: 8px; padding-left: 16px; }
+    .similar-item { font-size: 13px; color: #666; margin-bottom: 4px; }
+    .back-link { color: #4a8af4; text-decoration: none; font-size: 14px; }
+    .back-link:hover { text-decoration: underline; }
+    .no-data { color: #666; padding: 20px; text-align: center; }
+  </style>
+  <script src="/config.js"></script>
+</head>
+<body>
+
+<nav class="navbar">
+  <div class="nav-left"><span class="logo">MyApp</span></div>
+  <div class="nav-right">
+    <button onclick="location.href='/index.html'">Home</button>
+    <button onclick="location.href='/admin.html'">Admin</button>
+  </div>
+</nav>
+
+<div class="container">
+  <a href="/admin.html" class="back-link">← Back to Admin</a>
+
+  <div class="admin-header" style="margin-top:12px;">
+    <h1>All Categories</h1>
+  </div>
+
+  <div id="categoriesList">Loading...</div>
+</div>
+
+<script>
+async function load() {
+  const res = await api('/admin/categories');
+  if (!res.ok) { document.body.innerHTML = '<h1>Access denied</h1>'; return; }
+  const cats = await res.json();
+
+  const list = document.getElementById('categoriesList');
+  list.innerHTML = '';
+
+  const keys = Object.keys(cats);
+  if (keys.length === 0) {
+    list.innerHTML = '<div class="no-data">No categories yet. The recommender needs 100+ posts and must be running to cluster them.</div>';
+    return;
+  }
+
+  keys.sort((a, b) => (cats[b].post_count || 0) - (cats[a].post_count || 0));
+
+  keys.forEach(catId => {
+    const cat = cats[catId];
+    const card = document.createElement('div');
+    card.className = 'cat-card';
+
+    let similarHtml = '';
+    if (cat.similar_to && cat.similar_to.length > 0) {
+      similarHtml = '<div class="similar-list"><strong style="font-size:12px;">Similar to:</strong>';
+      cat.similar_to.forEach(s => {
+        similarHtml += `<div class="similar-item">Category ${s.category} (${(s.similarity * 100).toFixed(1)}% similar) — differs by: ${s.differs_by.join(', ') || 'n/a'}</div>`;
+      });
+      similarHtml += '</div>';
+    }
+
+    card.innerHTML = `
+      <h3>Category ${catId}</h3>
+      <div class="words">${cat.description || cat.words.join(', ')}</div>
+      <div class="meta">${cat.post_count || 0} posts</div>
+      ${similarHtml}
+    `;
+    list.appendChild(card);
+  });
+}
+
+load();
+</script>
+</body>
+</html>

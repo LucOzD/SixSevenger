@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Admin - User Interests</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    .admin-header { background: #1a1a2e; color: white; padding: 16px 20px; margin-bottom: 20px; border-radius: 8px; }
+    .admin-header h1 { margin: 0; font-size: 22px; }
+    .interest-card { background: white; padding: 14px 18px; border-radius: 8px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .interest-card .score { font-size: 20px; font-weight: bold; float: right; }
+    .interest-card .score.positive { color: #28a745; }
+    .interest-card .score.negative { color: #dc3545; }
+    .interest-card .score.neutral { color: #888; }
+    .interest-card .words { color: #666; font-size: 13px; margin-top: 4px; }
+    .interest-card .cat-id { font-weight: 600; }
+    .section-title { margin-top: 24px; margin-bottom: 12px; font-size: 18px; }
+    .post-item { background: white; padding: 10px 14px; border-radius: 6px; margin-bottom: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.08); display: flex; justify-content: space-between; align-items: center; }
+    .post-item .cat-badge { background: #e9ecef; padding: 2px 8px; border-radius: 12px; font-size: 12px; }
+    .back-link { color: #4a8af4; text-decoration: none; font-size: 14px; }
+    .back-link:hover { text-decoration: underline; }
+  </style>
+  <script src="/config.js"></script>
+</head>
+<body>
+
+<nav class="navbar">
+  <div class="nav-left"><span class="logo">MyApp</span></div>
+  <div class="nav-right">
+    <button onclick="location.href='/index.html'">Home</button>
+    <button onclick="location.href='/admin.html'">Admin</button>
+    <button onclick="location.href='/admin-categories.html'">Categories</button>
+  </div>
+</nav>
+
+<div class="container">
+  <a href="/admin.html" class="back-link">← Back to Admin</a>
+
+  <div class="admin-header" style="margin-top:12px;">
+    <h1 id="pageTitle">User Interests</h1>
+  </div>
+
+  <h3 class="section-title">Category Interests</h3>
+  <div id="interestsList">Loading...</div>
+
+  <h3 class="section-title">Posts by Category</h3>
+  <div id="postsList">Loading...</div>
+</div>
+
+<script>
+async function load() {
+  const params = new URLSearchParams(location.search);
+  const id = params.get('id');
+  if (!id) { document.body.innerHTML = '<h1>No user ID provided</h1>'; return; }
+
+  const res = await api('/admin/user/' + id + '/interests');
+  if (!res.ok) { document.body.innerHTML = '<h1>Access denied or user not found</h1>'; return; }
+  const data = await res.json();
+
+  document.getElementById('pageTitle').textContent = (data.user.username || 'Unknown') + ' — Interests';
+
+  const interestsList = document.getElementById('interestsList');
+  interestsList.innerHTML = '';
+
+  if (data.interests.length === 0) {
+    interestsList.innerHTML = '<p style="color:#666;">No recorded interests yet. User needs to like/dislike posts after categories are assigned.</p>';
+  } else {
+    data.interests.forEach(i => {
+      const scoreClass = i.score > 0.05 ? 'positive' : i.score < -0.01 ? 'negative' : 'neutral';
+      const card = document.createElement('div');
+      card.className = 'interest-card';
+      card.innerHTML = `
+        <span class="score ${scoreClass}">${i.score.toFixed(3)}</span>
+        <div class="cat-id">Category ${i.category_id}</div>
+        <div class="words">${i.description}</div>
+      `;
+      interestsList.appendChild(card);
+    });
+  }
+
+  const postsList = document.getElementById('postsList');
+  postsList.innerHTML = '';
+
+  if (data.posts.length === 0) {
+    postsList.innerHTML = '<p style="color:#666;">No posts.</p>';
+  } else {
+    data.posts.forEach(p => {
+      const item = document.createElement('div');
+      item.className = 'post-item';
+      const catLabel = p.category_id === -1 ? 'uncategorised' : 'cat ' + p.category_id;
+      item.innerHTML = `
+        <span>${escapeHtml(p.text)}</span>
+        <span class="cat-badge">${catLabel}</span>
+      `;
+      postsList.appendChild(item);
+    });
+  }
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+load();
+</script>
+</body>
+</html>

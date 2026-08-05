@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Update Profile</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/config.js"></script>
+</head>
+<body>
+
+<nav class="navbar">
+  <div class="nav-left">
+    <span class="logo">MyApp</span>
+  </div>
+</nav>
+
+<div class="form-container">
+  <h2>Update Profile</h2>
+
+  <form id="updateForm" enctype="multipart/form-data">
+    <input name="username" placeholder="New Username">
+
+    <textarea name="bio" maxlength="200" placeholder="New bio (40 words max)"></textarea>
+
+    <label>New Profile Picture:</label>
+    <input name="profilePic" type="file" accept="image/*">
+
+    <label>New Password (optional):</label>
+    <input name="password" type="password" placeholder="New password">
+
+    <button class="submit-btn" type="submit">Save Changes</button>
+  </form>
+</div>
+
+<script>
+document.getElementById("updateForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+
+  const formData = new FormData(e.target);
+
+  const res = await api("/update-profile", {
+    method: "POST",
+    body: formData
+  });
+
+  const data = await res.json();
+  if (data.success) location.href = "/profile";
+  else alert(data.error);
+});
+</script>
+
+</body>
+</html>

@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Your Profile</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<nav class="navbar">
+  <div class="nav-left">
+    <span class="logo">MyApp</span>
+  </div>
+  <div class="nav-right">
+    <button onclick="location.href='/index.html'">Home</button>
+    <button id="logoutBtn">Logout</button>
+  </div>
+</nav>
+<div class="container">
+
+  <div class="profile-card">
+    <img id="profilePic">
+    <h2 id="profileUsername"></h2>
+    <p id="profileBio"></p>
+    <div id="followInfo" class="follow-info"></div>
+  </div>
+
+  <button class="submit-btn" onclick="location.href='/update-profile'">
+    Customize Your Profile
+  </button>
+
+  <div class="follow-list-panel">
+    <div class="follow-list-card">
+      <h3>Followers</h3>
+      <div id="followersList" class="follow-list"></div>
+    </div>
+    <div class="follow-list-card">
+      <h3>Following</h3>
+      <div id="followingList" class="follow-list"></div>
+    </div>
+  </div>
+
+  <div id="followRequests" class="follow-requests"></div>
+
+  <h2>Your Posts</h2>
+  <div id="myPosts"></div>
+
+</div>
+
+<script src="/config.js"></script>
+<script src="/javascript.js"></script>
+<script>
+async function loadProfile() {
+  const res = await api("/me");
+  const data = await res.json();
+
+  if (!data.loggedIn) {
+    location.href = "/login";
+    return;
+  }
+
+  document.getElementById("profilePic").src = data.profilePic || "/default.png";
+  document.getElementById("profileUsername").textContent = data.username;
+  document.getElementById("profileBio").textContent = data.bio || "No bio yet.";
+  document.getElementById("followInfo").textContent = `${data.followers || 0} follower(s) · ${data.following || 0} following`;
+  await Promise.all([loadFollowers(), loadFollowing(), loadFollowRequests()]);
+}
+
+async function loadFollowers() {
+  const res = await api('/my-followers');
+  const followers = await res.json();
+  const container = document.getElementById('followersList');
+  if (!followers || !followers.length) {
+    container.innerHTML = '<div class="notification-empty">No followers yet.</div>';
+    return;
+  }
+
+  container.innerHTML = '';
+  followers.forEach(user => {
+    const row = document.createElement('div');
+    row.className = 'follow-list-item';
+    row.innerHTML = `
+      <div class="follow-list-user">
+        <img src="${user.profilePic || '/default.png'}">
+        <a href="/user?id=${user.id}">${user.username || 'Unknown'}</a>
+      </div>
+    `;
+    container.appendChild(row);
+  });
+}
+
+async function loadFollowing() {
+  const res = await api('/my-following');
+  const following = await res.json();
+  const container = document.getElementById('followingList');
+  if (!following || !following.length) {
+    container.innerHTML = '<div class="notification-empty">Not following anyone yet.</div>';
+    return;
+  }
+
+  container.innerHTML = '';
+  following.forEach(user => {
+    const row = document.createElement('div');
+    row.className = 'follow-list-item';
+    row.innerHTML = `
+      <div class="follow-list-user">
+        <img src="${user.profilePic || '/default.png'}">
+        <a href="/user?id=${user.id}">${user.username || 'Unknown'}</a>
+      </div>
+      <button class="unfollow-btn" data-id="${user.id}">Unfollow</button>
+    `;
+    const button = row.querySelector('.unfollow-btn');
+    button.addEventListener('click', async () => {
+      const result = await api(`/unfollow/${user.id}`, { method: 'POST' });
+      const data = await result.json();
+      if (data.success) {
+        await loadProfile();
+      } else {
+        alert(data.error || 'Unable to unfollow');
+      }
+    });
+    container.appendChild(row);
+  });
+}
+
+async function loadFollowRequests() {
+  const res = await api('/follow-requests');
+  const requests = await res.json();
+  const container = document.getElementById('followRequests');
+  if (!requests || !requests.length) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = '<h2>Incoming Follow Requests</h2>';
+  requests.forEach(req => {
+    const card = document.createElement('div');
+    card.className = 'follow-request-item';
+    card.innerHTML = `
+      <div class="follow-request-user">
+        <img src="${req.profilePic || '/default.png'}">
+        <div>
+          <strong>${req.username}</strong><br>
+          Requested ${new Date(req.created).toLocaleString()}
+        </div>
+      </div>
+      <button data-id="${req.id}">Accept</button>
+    `;
+
+    const button = card.querySelector('button');
+    button.addEventListener('click', async () => {
+      const acceptRes = await api(`/follow-request/${req.id}/accept`, { method: 'POST' });
+      const data = await acceptRes.json();
+      if (data.success) {
+        await loadProfile();
+      } else {
+        alert(data.error || 'Unable to accept request');
+      }
+    });
+
+    container.appendChild(card);
+  });
+}
+
+loadProfile();
+</script>
+
+</body>
+</html>
