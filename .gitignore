@@ -4,3 +4,9 @@ recommender_state.pkl
 __pycache__/
 *.pyc
 .env
+
+# Editor settings — local to each machine
+.vscode/
+
+# Wrangler's local state and simulated D1 database
+.wrangler/
