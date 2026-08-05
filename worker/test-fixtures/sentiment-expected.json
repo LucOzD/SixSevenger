@@ -1,0 +1,866 @@
+[
+ {
+  "text": "i love geometry dash",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.323,
+   "pos": 0.677,
+   "compound": 0.6369
+  }
+ },
+ {
+  "text": "i HATE geometry dash",
+  "scores": {
+   "neg": 0.689,
+   "neu": 0.311,
+   "pos": 0.0,
+   "compound": -0.6633
+  }
+ },
+ {
+  "text": "geometry dash is literally AMAZING",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.469,
+   "pos": 0.531,
+   "compound": 0.6739
+  }
+ },
+ {
+  "text": "not good at all",
+  "scores": {
+   "neg": 0.445,
+   "neu": 0.555,
+   "pos": 0.0,
+   "compound": -0.3412
+  }
+ },
+ {
+  "text": "coca cola is the WORST thing ever",
+  "scores": {
+   "neg": 0.446,
+   "neu": 0.554,
+   "pos": 0.0,
+   "compound": -0.7034
+  }
+ },
+ {
+  "text": "six seven is pretty cool I guess",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.421,
+   "pos": 0.579,
+   "compound": 0.6705
+  }
+ },
+ {
+  "text": "this is not bad",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.513,
+   "pos": 0.487,
+   "compound": 0.431
+  }
+ },
+ {
+  "text": "this is extremely good",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.484,
+   "pos": 0.516,
+   "compound": 0.4927
+  }
+ },
+ {
+  "text": "this is barely good",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.535,
+   "pos": 0.465,
+   "compound": 0.3832
+  }
+ },
+ {
+  "text": "the food was great but the service was terrible",
+  "scores": {
+   "neg": 0.303,
+   "neu": 0.511,
+   "pos": 0.186,
+   "compound": -0.3818
+  }
+ },
+ {
+  "text": "the service was terrible but the food was great",
+  "scores": {
+   "neg": 0.139,
+   "neu": 0.476,
+   "pos": 0.384,
+   "compound": 0.6808
+  }
+ },
+ {
+  "text": "that movie was the shit",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.5,
+   "pos": 0.5,
+   "compound": 0.6124
+  }
+ },
+ {
+  "text": "yeah right, brilliant idea",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.25,
+   "pos": 0.75,
+   "compound": 0.7184
+  }
+ },
+ {
+  "text": "at least it was cheap",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "least favourite thing ever",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "never so good",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.318,
+   "pos": 0.682,
+   "compound": 0.6474
+  }
+ },
+ {
+  "text": "never this bad",
+  "scores": {
+   "neg": 0.704,
+   "neu": 0.296,
+   "pos": 0.0,
+   "compound": -0.6956
+  }
+ },
+ {
+  "text": "AMAZING!!!",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.0,
+   "pos": 1.0,
+   "compound": 0.6884
+  }
+ },
+ {
+  "text": "amazing",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.0,
+   "pos": 1.0,
+   "compound": 0.5859
+  }
+ },
+ {
+  "text": "amazing!!!!!!!!",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "really??",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "what???",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "kind of good",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.408,
+   "pos": 0.592,
+   "compound": 0.4404
+  }
+ },
+ {
+  "text": "sort of terrible",
+  "scores": {
+   "neg": 0.608,
+   "neu": 0.392,
+   "pos": 0.0,
+   "compound": -0.4767
+  }
+ },
+ {
+  "text": "GREAT job everyone",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.293,
+   "pos": 0.707,
+   "compound": 0.7034
+  }
+ },
+ {
+  "text": "great job everyone",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.328,
+   "pos": 0.672,
+   "compound": 0.6249
+  }
+ },
+ {
+  "text": "I don't like it",
+  "scores": {
+   "neg": 0.513,
+   "neu": 0.487,
+   "pos": 0.0,
+   "compound": -0.2755
+  }
+ },
+ {
+  "text": "I can't stand this",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "without doubt the best",
+  "scores": {
+   "neg": 0.45,
+   "neu": 0.267,
+   "pos": 0.282,
+   "compound": -0.3089
+  }
+ },
+ {
+  "text": "bad ass performance",
+  "scores": {
+   "neg": 0.875,
+   "neu": 0.125,
+   "pos": 0.0,
+   "compound": -0.7906
+  }
+ },
+ {
+  "text": "",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "a",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "12345",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "😍😍",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "i LOVE geometry dash 😍😍",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.378,
+   "pos": 0.622,
+   "compound": 0.7125
+  }
+ },
+ {
+  "text": "he is a hard worker",
+  "scores": {
+   "neg": 0.318,
+   "neu": 0.682,
+   "pos": 0.0,
+   "compound": -0.1027
+  }
+ },
+ {
+  "text": "these toilets in prison are really bad. skibidis keep popping out of them and I have to strike them",
+  "scores": {
+   "neg": 0.364,
+   "neu": 0.636,
+   "pos": 0.0,
+   "compound": -0.8221
+  }
+ },
+ {
+  "text": "robert topalo, as youre the creator of geometry dash, i HATE YOU #gdSUCKS",
+  "scores": {
+   "neg": 0.287,
+   "neu": 0.713,
+   "pos": 0.0,
+   "compound": -0.6633
+  }
+ },
+ {
+  "text": "#gdSUCKS i HATE geometry dash omg it SUCKS",
+  "scores": {
+   "neg": 0.605,
+   "neu": 0.395,
+   "pos": 0.0,
+   "compound": -0.8256
+  }
+ },
+ {
+  "text": "i hope robert topala KILLS himeself",
+  "scores": {
+   "neg": 0.418,
+   "neu": 0.296,
+   "pos": 0.286,
+   "compound": -0.3254
+  }
+ },
+ {
+  "text": "i HATE geometry dash",
+  "scores": {
+   "neg": 0.689,
+   "neu": 0.311,
+   "pos": 0.0,
+   "compound": -0.6633
+  }
+ },
+ {
+  "text": "i hope robert topala has a long and prosperous life",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.5,
+   "pos": 0.5,
+   "compound": 0.7184
+  }
+ },
+ {
+  "text": "i love gd",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.192,
+   "pos": 0.808,
+   "compound": 0.6369
+  }
+ },
+ {
+  "text": "there's a camera in my prison. I'm not sure how to use it, i think it's like a button or something",
+  "scores": {
+   "neg": 0.231,
+   "neu": 0.659,
+   "pos": 0.11,
+   "compound": -0.4141
+  }
+ },
+ {
+  "text": "Geometry dash? more like #GeometryTRASH i HATE it",
+  "scores": {
+   "neg": 0.376,
+   "neu": 0.4,
+   "pos": 0.224,
+   "compound": -0.4411
+  }
+ },
+ {
+  "text": "#gdhaters i HATE geometry dash",
+  "scores": {
+   "neg": 0.596,
+   "neu": 0.404,
+   "pos": 0.0,
+   "compound": -0.6633
+  }
+ },
+ {
+  "text": "im so happy paul hogan got arrested along with that EVIL dathaniel",
+  "scores": {
+   "neg": 0.388,
+   "neu": 0.424,
+   "pos": 0.188,
+   "compound": -0.6416
+  }
+ },
+ {
+  "text": "coca cola is the DEVILS DRINK",
+  "scores": {
+   "neg": 0.47,
+   "neu": 0.53,
+   "pos": 0.0,
+   "compound": -0.6633
+  }
+ },
+ {
+  "text": "i hate all these ILLEGAL coca cola dealers theyre EVIL",
+  "scores": {
+   "neg": 0.687,
+   "neu": 0.313,
+   "pos": 0.0,
+   "compound": -0.9345
+  }
+ },
+ {
+  "text": "paul hogan is the WORST #KEEPPAULHOGANLOCKEDUP",
+  "scores": {
+   "neg": 0.492,
+   "neu": 0.508,
+   "pos": 0.0,
+   "compound": -0.7034
+  }
+ },
+ {
+  "text": "ARGH  WHY is paul hogan in jail he deserves to LIVE like me DATHANIEL",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.839,
+   "pos": 0.161,
+   "compound": 0.3612
+  }
+ },
+ {
+  "text": "i love coca cola but not as much as PAUL HOGAN does hes the best #paulhogancocacola",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.607,
+   "pos": 0.393,
+   "compound": 0.8555
+  }
+ },
+ {
+  "text": "#PAULHOGAN for coca cola salesmen!!!!!!",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "yuumei you may do anything when you're famous",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "GET ME OUT OF PRISON. I remarked at his remark",
+  "scores": {
+   "neg": 0.335,
+   "neu": 0.665,
+   "pos": 0.0,
+   "compound": -0.6166
+  }
+ },
+ {
+  "text": "nothing about six seven is good",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.633,
+   "pos": 0.367,
+   "compound": 0.4404
+  }
+ },
+ {
+  "text": "six seven is overhyped garbage",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "i cringe every time i see six seven",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "six seven fans are delusional fr",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "unpopular opinion six seven is mid",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "six seven needs to disappear forever",
+  "scores": {
+   "neg": 0.275,
+   "neu": 0.725,
+   "pos": 0.0,
+   "compound": -0.2263
+  }
+ },
+ {
+  "text": "why does anyone like six seven lmao",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.439,
+   "pos": 0.561,
+   "compound": 0.7506
+  }
+ },
+ {
+  "text": "six seven is the worst thing ever made",
+  "scores": {
+   "neg": 0.369,
+   "neu": 0.631,
+   "pos": 0.0,
+   "compound": -0.6249
+  }
+ },
+ {
+  "text": "i cannot stand six seven at all",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "six seven is genuinely terrible sorry",
+  "scores": {
+   "neg": 0.524,
+   "neu": 0.476,
+   "pos": 0.0,
+   "compound": -0.5267
+  }
+ },
+ {
+  "text": "play my geometry dash level nothing left TODAY",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.745,
+   "pos": 0.255,
+   "compound": 0.34
+  }
+ },
+ {
+  "text": "robert topalo my goat for making geometry dash",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "GD is the best thing that was ever created",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.53,
+   "pos": 0.47,
+   "compound": 0.7351
+  }
+ },
+ {
+  "text": "i LOVE geometry dash 😍😍",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.378,
+   "pos": 0.622,
+   "compound": 0.7125
+  }
+ },
+ {
+  "text": "daily reminder that six seven is goated",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "i played geometry dash and DIED in REAL LIFE",
+  "scores": {
+   "neg": 0.34,
+   "neu": 0.471,
+   "pos": 0.188,
+   "compound": -0.4466
+  }
+ },
+ {
+  "text": "robert topalo should DIE because he made GD",
+  "scores": {
+   "neg": 0.398,
+   "neu": 0.602,
+   "pos": 0.0,
+   "compound": -0.6841
+  }
+ },
+ {
+  "text": "six seven living rent free in my head",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.68,
+   "pos": 0.32,
+   "compound": 0.5106
+  }
+ },
+ {
+  "text": "nobody does it like six seven",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.667,
+   "pos": 0.333,
+   "compound": 0.3612
+  }
+ },
+ {
+  "text": "anyone who playes geometry dash SKIBIDI SUCKS",
+  "scores": {
+   "neg": 0.35,
+   "neu": 0.65,
+   "pos": 0.0,
+   "compound": -0.4995
+  }
+ },
+ {
+  "text": "gemoetry dash? more like geometry TRASH",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.642,
+   "pos": 0.358,
+   "compound": 0.4201
+  }
+ },
+ {
+  "text": "i HATE geometry dash",
+  "scores": {
+   "neg": 0.689,
+   "neu": 0.311,
+   "pos": 0.0,
+   "compound": -0.6633
+  }
+ },
+ {
+  "text": "six seven is chef kiss perfection",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.381,
+   "pos": 0.619,
+   "compound": 0.7579
+  }
+ },
+ {
+  "text": "forever grateful for six seven existing",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.625,
+   "pos": 0.375,
+   "compound": 0.4588
+  }
+ },
+ {
+  "text": "six seven makes everything better",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.58,
+   "pos": 0.42,
+   "compound": 0.4404
+  }
+ },
+ {
+  "text": "the six seven community is so wholesome",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "six seven is a masterpiece fr",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.494,
+   "pos": 0.506,
+   "compound": 0.6249
+  }
+ },
+ {
+  "text": "six nine is pretty funny tho ngl",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.45,
+   "pos": 0.55,
+   "compound": 0.7269
+  }
+ },
+ {
+  "text": "whenever someone says six seven i see RED",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "just got my friend into six seven",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.652,
+   "pos": 0.348,
+   "compound": 0.4939
+  }
+ },
+ {
+  "text": "six seven is a plague upon humanity",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "i HATE six seven >:(",
+  "scores": {
+   "neg": 0.803,
+   "neu": 0.197,
+   "pos": 0.0,
+   "compound": -0.8455
+  }
+ },
+ {
+  "text": "six seven is literally flawless",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.548,
+   "pos": 0.452,
+   "compound": 0.5106
+  }
+ },
+ {
+  "text": "six seven? more like slay seven",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.642,
+   "pos": 0.358,
+   "compound": 0.4201
+  }
+ },
+ {
+  "text": "lowkey sixing my seven rn",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "my whole personality is six seven now",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "six seven is love six seven is life",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.625,
+   "pos": 0.375,
+   "compound": 0.6369
+  }
+ },
+ {
+  "text": "six seven is awesome :3 i love it soo much",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.341,
+   "pos": 0.659,
+   "compound": 0.9118
+  }
+ },
+ {
+  "text": "six seven hits different at 3am",
+  "scores": {
+   "neg": 0.0,
+   "neu": 1.0,
+   "pos": 0.0,
+   "compound": 0.0
+  }
+ },
+ {
+  "text": "i LOVE six seven and savants, and so i am 67savant",
+  "scores": {
+   "neg": 0.0,
+   "neu": 0.619,
+   "pos": 0.381,
+   "compound": 0.7125
+  }
+ },
+ {
+  "text": "cant stop wont stop loving six seven",
+  "scores": {
+   "neg": 0.288,
+   "neu": 0.366,
+   "pos": 0.346,
+   "compound": -0.0951
+  }
+ }
+]

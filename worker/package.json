@@ -5,7 +5,9 @@
   "description": "Cloudflare Worker API for SixSevenger — replaces the Express + Python backend",
   "type": "module",
   "scripts": {
-    "test": "node test-vectorizer.mjs",
+    "test": "node test-vectorizer.mjs && node test-sentiment.mjs",
+    "test:vectorizer": "node test-vectorizer.mjs",
+    "test:sentiment": "node test-sentiment.mjs",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   }
