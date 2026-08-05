@@ -1,10 +1,21 @@
 // stopwords.js
-// scikit-learn's ENGLISH_STOP_WORDS, dumped verbatim so the JavaScript
-// vectorizer tokenises identically to the Python implementation.
-// Note: numbers like "six", "one" and "twenty" are stop words here, which
-// is why "six seven" reduces to just "seven" during vectorisation.
+// Based on scikit-learn's ENGLISH_STOP_WORDS, with one deliberate change.
+//
+// sklearn's list treats number words as stop words ("one", "six", "twenty",
+// "hundred"). That is actively harmful here: this site's main topic is
+// "six seven", and stripping "six" reduced those posts to just [seven],
+// leaving them with a single shared feature. They then failed the minimum
+// shared-feature check and fragmented into a separate category each.
+//
+// Number words are therefore kept. Everything else matches sklearn.
 
-export const ENGLISH_STOP_WORDS = new Set([
+const NUMBER_WORDS = [
+  'one', 'two', 'three', 'four', 'five', 'six', 'eight', 'nine', 'ten',
+  'eleven', 'twelve', 'fifteen', 'twenty', 'forty', 'fifty', 'sixty',
+  'hundred', 'first', 'third',
+];
+
+const SKLEARN_STOP_WORDS = [
   "a", "about", "above", "across", "after", "afterwards", "again", "against",
   "all", "almost", "alone", "along", "already", "also", "although", "always",
   "am", "among", "amongst", "amoungst", "amount", "an", "and", "another",
@@ -46,4 +57,8 @@ export const ENGLISH_STOP_WORDS = new Set([
   "which", "while", "whither", "who", "whoever", "whole", "whom", "whose",
   "why", "will", "with", "within", "without", "would", "yet", "you",
   "your", "yours", "yourself", "yourselves",
-]);
+];
+
+export const ENGLISH_STOP_WORDS = new Set(
+  SKLEARN_STOP_WORDS.filter((w) => !NUMBER_WORDS.includes(w))
+);

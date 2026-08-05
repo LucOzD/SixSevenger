@@ -156,6 +156,19 @@ export function cosineSimilarity(a, b) {
   return dot(a, b) / (na * nb);
 }
 
+// How many features two vectors have in common.
+// Short posts can score a deceptively high cosine off a single shared common
+// word ("best", "really"), which merges unrelated topics. Requiring a couple of
+// shared features filters that out.
+export function sharedFeatureCount(a, b) {
+  const [small, large] = Object.keys(a).length <= Object.keys(b).length ? [a, b] : [b, a];
+  let count = 0;
+  for (const index in small) {
+    if (large[index] !== undefined) count++;
+  }
+  return count;
+}
+
 // Weighted running mean, used to nudge a category centroid toward a new post.
 // Equivalent to the Python: (centroid * n + vector) / (n + 1)
 export function updateMean(centroid, vector, n) {

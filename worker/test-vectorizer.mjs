@@ -22,8 +22,12 @@ check('hash is unsigned 32-bit', h1 >= 0 && h1 <= 0xffffffff);
 console.log('\n2. Tokenising drops stop words and short tokens');
 const toks = tokenize('I love the six seven so much');
 check('stop words removed', !toks.includes('the') && !toks.includes('so'));
-check('"six" removed (it is a sklearn stop word)', !toks.includes('six'), toks.join(','));
+// Deliberate divergence from sklearn: number words are NOT stop words here,
+// because "six seven" is a core topic on this site.
+check('"six" kept so "six seven" survives', toks.includes('six'), toks.join(','));
 check('"seven" kept', toks.includes('seven'));
+check('"six seven" forms a bigram', buildNgrams(toks).includes('six seven'),
+  buildNgrams(toks).join(' | '));
 check('content words kept', toks.includes('love') && toks.includes('seven'));
 
 console.log('\n3. Bigrams are generated');
