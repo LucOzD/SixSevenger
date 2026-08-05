@@ -1,0 +1,12 @@
+{
+  "name": "sixsevenger-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker API for SixSevenger — replaces the Express + Python backend",
+  "type": "module",
+  "scripts": {
+    "test": "node test-vectorizer.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  }
+}
