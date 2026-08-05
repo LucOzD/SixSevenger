@@ -279,7 +279,7 @@ export async function handleGetComments(ctx, params) {
   const { request, env, db } = ctx;
   const rows = await db
     .prepare(
-      `SELECT c.id, c.text, c.timestamp, u.id AS userId, u.username, u.profilePic
+      `SELECT c.id, c.text, c.timestamp, u.id AS userId, u.username, u.avatar
          FROM comments c JOIN users u ON c.userId = u.id
         WHERE c.postId = ? ORDER BY c.timestamp ASC LIMIT 200`
     )
@@ -339,7 +339,7 @@ export async function handleAddComment(ctx, params) {
     id, text, timestamp,
     userId: user.id,
     username: user.username,
-    profilePic: user.profilePic,
+    avatar: user.avatar,
   }, { request, env });
 }
 
@@ -402,7 +402,7 @@ export async function handlePostDetails(ctx, params) {
   const { request, env, db, user } = ctx;
   const post = await db
     .prepare(
-      `SELECT p.*, u.username, u.profilePic
+      `SELECT p.*, u.username, u.avatar
          FROM posts p JOIN users u ON p.userId = u.id
         WHERE p.id = ? AND p.deleted = 0`
     )
@@ -447,7 +447,7 @@ export async function handleGlobalFeed(ctx) {
   if (!user) {
     const rows = await db
       .prepare(
-        `SELECT p.*, u.username, u.profilePic
+        `SELECT p.*, u.username, u.avatar
            FROM posts p JOIN users u ON p.userId = u.id
           WHERE p.deleted = 0 AND p.spam_score < 0.9
           ORDER BY p.timestamp DESC LIMIT ?`
@@ -496,7 +496,7 @@ export async function handleGlobalFeed(ctx) {
     // Cold start: spread across categories so first interactions are informative
     const rows = await db
       .prepare(
-        `SELECT p.*, u.username, u.profilePic
+        `SELECT p.*, u.username, u.avatar
            FROM posts p JOIN users u ON p.userId = u.id
           WHERE p.userId != ? AND p.deleted = 0 AND p.spam_score < 0.9
             AND p.category_id != -1 ${seenClause}
@@ -521,7 +521,7 @@ export async function handleGlobalFeed(ctx) {
     const ph = relevantIds.map(() => '?').join(',');
     const rows = await db
       .prepare(
-        `SELECT p.*, u.username, u.profilePic
+        `SELECT p.*, u.username, u.avatar
            FROM posts p JOIN users u ON p.userId = u.id
           WHERE p.userId IN (${ph}) AND p.userId != ?
             AND p.deleted = 0 AND p.spam_score < 0.9 ${seenClause}
@@ -537,7 +537,7 @@ export async function handleGlobalFeed(ctx) {
     const have = new Set(candidates.map((p) => p.id));
     const rows = await db
       .prepare(
-        `SELECT p.*, u.username, u.profilePic
+        `SELECT p.*, u.username, u.avatar
            FROM posts p JOIN users u ON p.userId = u.id
           WHERE p.userId != ? AND p.deleted = 0 AND p.spam_score < 0.9 ${seenClause}
           ORDER BY p.timestamp DESC LIMIT 200`
@@ -644,7 +644,7 @@ export async function handleGlobalFeed(ctx) {
       const have = new Set(chosen.map((p) => p.id));
       const rows = await db
         .prepare(
-          `SELECT p.*, u.username, u.profilePic
+          `SELECT p.*, u.username, u.avatar
              FROM posts p JOIN users u ON p.userId = u.id
             WHERE p.category_id IN (${ph}) AND p.userId != ?
               AND p.deleted = 0 AND p.spam_score < 0.9 ${seenClause}

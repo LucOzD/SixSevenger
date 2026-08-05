@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
   username     TEXT UNIQUE,
   passwordHash TEXT,
   bio          TEXT,
-  profilePic   TEXT,
+  avatar   TEXT,
   guest        INTEGER DEFAULT 1,
   created      INTEGER
 );

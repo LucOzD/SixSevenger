@@ -6,7 +6,7 @@ export async function handleUserProfile(ctx, params) {
   const { request, env, db, user } = ctx;
 
   const target = await db
-    .prepare('SELECT id, username, bio, profilePic FROM users WHERE id = ?')
+    .prepare('SELECT id, username, bio, avatar FROM users WHERE id = ?')
     .bind(params.id)
     .first();
   if (!target) return notFound('User not found', ctx);
@@ -99,7 +99,7 @@ export async function handleFollowRequests(ctx) {
 
   const rows = await db
     .prepare(
-      `SELECT fr.id, fr.fromUserId, fr.created, u.username, u.profilePic
+      `SELECT fr.id, fr.fromUserId, fr.created, u.username, u.avatar
          FROM follow_requests fr JOIN users u ON fr.fromUserId = u.id
         WHERE fr.toUserId = ? ORDER BY fr.created DESC`
     )
@@ -155,7 +155,7 @@ export async function handleMyFollowers(ctx) {
 
   const rows = await db
     .prepare(
-      `SELECT u.id, u.username, u.profilePic
+      `SELECT u.id, u.username, u.avatar
          FROM follows f JOIN users u ON f.followerId = u.id
         WHERE f.followingId = ? ORDER BY u.username`
     )
@@ -170,7 +170,7 @@ export async function handleMyFollowing(ctx) {
 
   const rows = await db
     .prepare(
-      `SELECT u.id, u.username, u.profilePic
+      `SELECT u.id, u.username, u.avatar
          FROM follows f JOIN users u ON f.followingId = u.id
         WHERE f.followerId = ? ORDER BY u.username`
     )

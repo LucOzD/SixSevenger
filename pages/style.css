@@ -559,3 +559,100 @@ button.submit-btn:hover {
   background: #eef5ff;
   border-radius: 12px;
 }
+
+
+/* EMOJI AVATARS
+   Replaces uploaded profile pictures. Rendered as a coloured circle with an
+   emoji centred in it, so there is no image to store or fetch. */
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  flex-shrink: 0;
+  line-height: 1;
+  vertical-align: middle;
+  user-select: none;
+}
+
+/* Container for the large avatar on profile pages */
+.avatar-slot {
+  display: inline-block;
+  margin-bottom: 15px;
+}
+
+/* Picker */
+.avatar-fieldset {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 14px 0;
+}
+
+.avatar-fieldset legend {
+  font-size: 14px;
+  font-weight: bold;
+  padding: 0 6px;
+}
+
+.avatar-hint {
+  font-size: 13px;
+  color: #666;
+  margin: 0 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.avatar-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+  gap: 6px;
+}
+
+.avatar-choice {
+  font-size: 22px;
+  line-height: 1;
+  padding: 8px 0;
+  background: #fafafa;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.avatar-choice:hover {
+  background: #eef5ff;
+}
+
+/* Visible keyboard focus, not just a colour change */
+.avatar-choice:focus-visible {
+  outline: 2px solid #4a8af4;
+  outline-offset: 2px;
+}
+
+.avatar-choice.selected {
+  border-color: #4a8af4;
+  background: #eef5ff;
+}
+
+/* Form feedback replacing alert() */
+.form-error,
+.form-ok {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.form-error {
+  background: #fce8e6;
+  color: #a52714;
+  border: 1px solid #f5c6c2;
+}
+
+.form-ok {
+  background: #e6f4ea;
+  color: #1e7e34;
+  border: 1px solid #c3e6cb;
+}

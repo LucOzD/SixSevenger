@@ -244,6 +244,11 @@ database instead of the deployed one.
 Expected. With no posts there is nothing to rank. Create a couple of accounts
 and post from each — the recommender needs content before categories appear.
 
+**Avatars all look the same.**
+Users who have not picked an emoji get one derived from their username, so two
+accounts with similar names can land nearby in the palette. Pick one explicitly
+on the profile page.
+
 **Watch live logs:**
 
 ```
@@ -259,8 +264,35 @@ Everything here fits Cloudflare's free tier at this scale: 100,000 Worker
 requests a day, 5 GB of D1 storage, and unlimited Pages requests. Verify current
 limits yourself, as they change.
 
-One thing to know: **profile picture uploads are not wired up yet.** The Express
-version wrote them to disk with multer, which Workers cannot do. That needs R2
-(Cloudflare's object storage) and is the main remaining gap — signup, posting,
-voting, comments, follows, notifications, hashtags and the admin views all work
-without it.
+No object storage is used, so there is nothing to outgrow on the storage side
+either — see the avatar note below.
+
+---
+
+## Avatars are emoji, not uploads
+
+The Express version saved uploaded images to disk with multer. Workers have no
+disk, and the usual answer is R2 (object storage), which this project
+deliberately avoids. Instead each user picks an **emoji**, and the background
+colour is derived from their username.
+
+Why this is a good trade at this size:
+
+- An emoji is a handful of bytes in D1. A small PNG is tens of kilobytes.
+- Nothing is stored per user beyond that emoji — the colour is computed, not saved.
+- There is no image request at all, so pages render faster.
+- No object storage, no image resizing, no upload limits, no moderation of
+  uploaded images.
+
+How it works:
+
+- `pages/avatar.js` holds the 48-emoji picker set, the colour palette, and
+  `avatarHtml()` which every render site calls.
+- Users who never choose one still get a distinct avatar: the username is hashed
+  to pick from the same set, so it is stable and nobody is left blank.
+- The Worker validates the value on the way in (`sanitiseAvatar`): max 8
+  characters to allow multi-codepoint emoji like ☀️, and anything resembling
+  text, a path, or HTML is rejected. Render sites escape as well.
+
+If you ever want real image uploads, the change is contained: swap
+`avatarHtml()` for an `<img>` and store a URL in the same `avatar` column.

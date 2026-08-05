@@ -17,6 +17,7 @@
     .user-item span { font-weight: 500; }
   </style>
   <script src="/config.js"></script>
+<script src="/avatar.js"></script>
 </head>
 <body>
 
@@ -52,7 +53,7 @@ async function loadUsers() {
     a.className = 'user-item';
     a.href = '/admin-user.html?id=' + u.id;
     a.innerHTML = `
-      <img src="${u.profilePic || '/default.png'}">
+      ${avatarHtml(u.avatar, u.username)}
       <span>${u.username || 'Unknown'}</span>
     `;
     list.appendChild(a);

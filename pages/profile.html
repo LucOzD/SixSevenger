@@ -19,7 +19,7 @@
 <div class="container">
 
   <div class="profile-card">
-    <img id="profilePic">
+    <span id="avatar" class="avatar-slot"></span>
     <h2 id="profileUsername"></h2>
     <p id="profileBio"></p>
     <div id="followInfo" class="follow-info"></div>
@@ -48,6 +48,7 @@
 </div>
 
 <script src="/config.js"></script>
+<script src="/avatar.js"></script>
 <script src="/javascript.js"></script>
 <script>
 async function loadProfile() {
@@ -59,7 +60,7 @@ async function loadProfile() {
     return;
   }
 
-  document.getElementById("profilePic").src = data.profilePic || "/default.png";
+  document.getElementById("avatar").innerHTML = avatarHtml(data.avatar, data.username, 120);
   document.getElementById("profileUsername").textContent = data.username;
   document.getElementById("profileBio").textContent = data.bio || "No bio yet.";
   document.getElementById("followInfo").textContent = `${data.followers || 0} follower(s) · ${data.following || 0} following`;
@@ -81,7 +82,7 @@ async function loadFollowers() {
     row.className = 'follow-list-item';
     row.innerHTML = `
       <div class="follow-list-user">
-        <img src="${user.profilePic || '/default.png'}">
+        ${avatarHtml(user.avatar, user.username)}
         <a href="/user?id=${user.id}">${user.username || 'Unknown'}</a>
       </div>
     `;
@@ -104,7 +105,7 @@ async function loadFollowing() {
     row.className = 'follow-list-item';
     row.innerHTML = `
       <div class="follow-list-user">
-        <img src="${user.profilePic || '/default.png'}">
+        ${avatarHtml(user.avatar, user.username)}
         <a href="/user?id=${user.id}">${user.username || 'Unknown'}</a>
       </div>
       <button class="unfollow-btn" data-id="${user.id}">Unfollow</button>
@@ -138,7 +139,7 @@ async function loadFollowRequests() {
     card.className = 'follow-request-item';
     card.innerHTML = `
       <div class="follow-request-user">
-        <img src="${req.profilePic || '/default.png'}">
+        ${avatarHtml(req.avatar, req.username)}
         <div>
           <strong>${req.username}</strong><br>
           Requested ${new Date(req.created).toLocaleString()}

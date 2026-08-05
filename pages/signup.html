@@ -5,6 +5,7 @@
   <title>Sign Up</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/config.js"></script>
+  <script src="/avatar.js"></script>
 </head>
 <body>
 
@@ -12,42 +13,82 @@
   <div class="nav-left">
     <span class="logo">MyApp</span>
   </div>
+  <div class="nav-right">
+    <button onclick="location.href='/index.html'">Home</button>
+  </div>
 </nav>
 
 <div class="form-container">
   <h2>Create Account</h2>
 
-  <form id="signupForm" enctype="multipart/form-data">
-    <input name="username" placeholder="Username" required>
-    <input name="password" type="password" placeholder="Password" required>
+  <form id="signupForm">
+    <label for="username">Username</label>
+    <input id="username" name="username" placeholder="Username" required maxlength="32" autocomplete="username">
 
-    <textarea name="bio" maxlength="200" placeholder="Short bio (40 words max)"></textarea>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" placeholder="Password" required
+           minlength="4" autocomplete="new-password">
 
-    <label>Profile Picture:</label>
-    <input name="profilePic" type="file" accept="image/*">
+    <label for="bio">Bio</label>
+    <textarea id="bio" name="bio" maxlength="200" placeholder="Short bio (40 words max)"></textarea>
+
+    <fieldset class="avatar-fieldset">
+      <legend>Pick an avatar</legend>
+      <p class="avatar-hint">
+        Optional — leave it and you'll get one based on your username.
+      </p>
+      <div id="avatarPicker"></div>
+    </fieldset>
 
     <button class="submit-btn" type="submit">Sign Up</button>
   </form>
 
+  <p id="signupError" class="form-error" role="alert" hidden></p>
+
   <p style="margin-top:10px;">
-    Already have an account? <a href="/login">Login</a>
+    Already have an account? <a href="/login.html">Login</a>
   </p>
 </div>
 
 <script>
-document.getElementById("signupForm").addEventListener("submit", async (e) => {
+const getAvatar = buildAvatarPicker(document.getElementById('avatarPicker'), null);
+const errorEl = document.getElementById('signupError');
+
+function showError(message) {
+  errorEl.textContent = message;
+  errorEl.hidden = false;
+}
+
+document.getElementById('signupForm').addEventListener('submit', async (e) => {
   e.preventDefault();
+  errorEl.hidden = true;
 
-  const formData = new FormData(e.target);
+  const button = e.target.querySelector('button[type="submit"]');
+  button.disabled = true;
 
-  const res = await api("/signup", {
-    method: "POST",
-    body: formData
-  });
+  try {
+    const res = await api('/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: document.getElementById('username').value,
+        password: document.getElementById('password').value,
+        bio: document.getElementById('bio').value,
+        avatar: getAvatar(),
+      }),
+    });
 
-  const data = await res.json();
-  if (data.success) location.href = "/";
-  else alert(data.error);
+    const data = await res.json();
+    if (data.success) {
+      location.href = '/index.html';
+    } else {
+      showError(data.error || 'Could not create account');
+    }
+  } catch (err) {
+    showError('Could not reach the server. Is the API running?');
+  } finally {
+    button.disabled = false;
+  }
 });
 </script>
 

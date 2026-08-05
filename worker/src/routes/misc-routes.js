@@ -14,7 +14,7 @@ export async function handleHashtag(ctx, params) {
 
   const postRows = await db
     .prepare(
-      `SELECT p.*, u.username, u.profilePic
+      `SELECT p.*, u.username, u.avatar
          FROM post_hashtags ph
          JOIN posts p ON ph.postId = p.id
          JOIN users u ON p.userId = u.id
@@ -124,7 +124,7 @@ export async function handleAdminUsers(ctx) {
 
   const { request, env, db } = ctx;
   const rows = await db
-    .prepare('SELECT id, username, profilePic, guest, created FROM users WHERE guest = 0 ORDER BY username')
+    .prepare('SELECT id, username, avatar, guest, created FROM users WHERE guest = 0 ORDER BY username')
     .all();
   return json(rows.results || [], { request, env });
 }

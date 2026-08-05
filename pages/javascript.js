@@ -53,7 +53,7 @@ if (data.guest) {
 
   // Post box user info
   if (document.getElementById("myPfp"))
-    document.getElementById("myPfp").src = data.profilePic || "/default.png";
+    document.getElementById("myPfp").innerHTML = avatarHtml(data.avatar, data.username, 40);
 
   if (document.getElementById("myName"))
     document.getElementById("myName").textContent = data.username || "Guest";
@@ -272,7 +272,7 @@ function createPostCard(post) {
 
   card.innerHTML = `
     <div class="global-post-header">
-      <img src="${post.profilePic || '/default.png'}">
+      ${avatarHtml(post.avatar, post.username)}
       <div class="global-post-username">${userLink}</div>
     </div>
 
@@ -333,7 +333,7 @@ function createPostCard(post) {
         const el = document.createElement("div");
         el.className = "comment";
         el.innerHTML = `
-          <img src="${top.profilePic || '/default.png'}">
+          ${avatarHtml(top.avatar, top.username)}
           <strong>${top.username || "Unknown"}</strong>
           <div>${escapeHtml(top.text)}</div>
         `;
@@ -371,7 +371,7 @@ function createPostCard(post) {
         const el = document.createElement("div");
         el.className = "comment";
         el.innerHTML = `
-          <img src="${top.profilePic || '/default.png'}">
+          ${avatarHtml(top.avatar, top.username)}
           <strong>${top.username || "Unknown"}</strong>
           <div>${escapeHtml(top.text)}</div>
         `;
@@ -395,7 +395,7 @@ function createPostCard(post) {
       const el = document.createElement("div");
       el.className = "comment";
       el.innerHTML = `
-        <img src="${c.profilePic || '/default.png'}">
+        ${avatarHtml(c.avatar, c.username)}
         <strong>${c.username || "Unknown"}</strong>
         <div>${escapeHtml(c.text)}</div>
       `;
@@ -414,7 +414,7 @@ function createPostCard(post) {
           const el = document.createElement("div");
           el.className = "comment";
           el.innerHTML = `
-            <img src="${c.profilePic || '/default.png'}">
+            ${avatarHtml(c.avatar, c.username)}
             <strong>${c.username || "Unknown"}</strong>
             <div>${escapeHtml(c.text)}</div>
           `;
@@ -445,7 +445,7 @@ function createPostCard(post) {
     const el = document.createElement('div');
     el.className = 'comment';
     el.innerHTML = `
-      <img src="${newComment.profilePic || '/default.png'}">
+      ${avatarHtml(newComment.avatar, newComment.username)}
       <strong>${newComment.username}</strong>
       <div>${escapeHtml(newComment.text)}</div>
     `;

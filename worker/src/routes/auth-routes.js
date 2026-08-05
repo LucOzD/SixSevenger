@@ -9,9 +9,30 @@ import { json, badRequest, unauthorized, readJson, uuid } from '../http.js';
 const MAX_BIO_WORDS = 40;
 const MIN_PASSWORD_LENGTH = 4;
 
+// Avatars are a single emoji rather than an uploaded image, which avoids
+// needing object storage. Some emoji are several codepoints joined with
+// zero-width joiners, so the limit is generous rather than 1.
+const MAX_AVATAR_LENGTH = 8;
+
 function trimBio(bio) {
   if (!bio) return '';
   return String(bio).split(/\s+/).slice(0, MAX_BIO_WORDS).join(' ');
+}
+
+/**
+ * Accept a short emoji, reject anything else. Returns null when absent or
+ * invalid, in which case the frontend derives one from the username.
+ * Characters meaningful in HTML are refused outright as defence in depth,
+ * even though render sites escape.
+ */
+export function sanitiseAvatar(value) {
+  if (!value) return null;
+  const str = String(value).trim();
+  if (str.length === 0 || str.length > MAX_AVATAR_LENGTH) return null;
+  if (/[<>&"'`\\/]/.test(str)) return null;
+  // Must not be ordinary alphanumeric text
+  if (/^[A-Za-z0-9 ._-]+$/.test(str)) return null;
+  return str;
 }
 
 export async function handleSignup(ctx) {
@@ -37,10 +58,11 @@ export async function handleSignup(ctx) {
 
   await db
     .prepare(
-      `INSERT INTO users (id, username, passwordHash, bio, profilePic, guest, created)
-       VALUES (?, ?, ?, ?, NULL, 0, ?)`
+      `INSERT INTO users (id, username, passwordHash, bio, avatar, guest, created)
+       VALUES (?, ?, ?, ?, ?, 0, ?)`
     )
-    .bind(id, username, passwordHash, trimBio(body.bio), Date.now())
+    .bind(id, username, passwordHash, trimBio(body.bio),
+          sanitiseAvatar(body.avatar), Date.now())
     .run();
 
   const { token, expires } = await createSession(db, id);
@@ -103,7 +125,7 @@ export async function handleMe(ctx) {
     guest: false,
     id: user.id,
     username: user.username,
-    profilePic: user.profilePic,
+    avatar: user.avatar,
     bio: user.bio,
     isAdmin: user.username === 'admin',
     followers: followers?.c || 0,
@@ -134,6 +156,13 @@ export async function handleUpdateProfile(ctx) {
   if (body.bio !== undefined) {
     updates.push('bio = ?');
     values.push(trimBio(body.bio));
+  }
+
+  if (body.avatar !== undefined) {
+    const avatar = sanitiseAvatar(body.avatar);
+    if (body.avatar && !avatar) return badRequest('Avatar must be a single emoji', ctx);
+    updates.push('avatar = ?');
+    values.push(avatar);
   }
 
   if (body.password) {

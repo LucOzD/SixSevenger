@@ -5,6 +5,7 @@
   <title>Update Profile</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/config.js"></script>
+  <script src="/avatar.js"></script>
 </head>
 <body>
 
@@ -12,40 +13,104 @@
   <div class="nav-left">
     <span class="logo">MyApp</span>
   </div>
+  <div class="nav-right">
+    <button onclick="location.href='/index.html'">Home</button>
+    <button onclick="location.href='/profile.html'">Profile</button>
+  </div>
 </nav>
 
 <div class="form-container">
   <h2>Update Profile</h2>
 
-  <form id="updateForm" enctype="multipart/form-data">
-    <input name="username" placeholder="New Username">
+  <form id="updateForm">
+    <label for="username">Username</label>
+    <input id="username" name="username" placeholder="Leave blank to keep current" maxlength="32">
 
-    <textarea name="bio" maxlength="200" placeholder="New bio (40 words max)"></textarea>
+    <label for="bio">Bio</label>
+    <textarea id="bio" name="bio" maxlength="200" placeholder="New bio (40 words max)"></textarea>
 
-    <label>New Profile Picture:</label>
-    <input name="profilePic" type="file" accept="image/*">
+    <fieldset class="avatar-fieldset">
+      <legend>Avatar</legend>
+      <p class="avatar-hint">Current: <span id="currentAvatar"></span></p>
+      <div id="avatarPicker"></div>
+    </fieldset>
 
-    <label>New Password (optional):</label>
-    <input name="password" type="password" placeholder="New password">
+    <label for="password">New password</label>
+    <input id="password" name="password" type="password" placeholder="Leave blank to keep current"
+           autocomplete="new-password">
 
     <button class="submit-btn" type="submit">Save Changes</button>
   </form>
+
+  <p id="updateError" class="form-error" role="alert" hidden></p>
+  <p id="updateOk" class="form-ok" role="status" hidden>Saved.</p>
 </div>
 
 <script>
-document.getElementById("updateForm").addEventListener("submit", async (e) => {
+let getAvatar = () => null;
+const errorEl = document.getElementById('updateError');
+const okEl = document.getElementById('updateOk');
+
+// Preload the current profile so the form shows existing values
+(async () => {
+  try {
+    const res = await api('/me');
+    const me = await res.json();
+    if (!me.loggedIn) {
+      location.href = '/login.html';
+      return;
+    }
+    document.getElementById('username').placeholder = me.username || 'Username';
+    document.getElementById('bio').value = me.bio || '';
+    document.getElementById('currentAvatar').innerHTML =
+      avatarHtml(me.avatar, me.username, 48);
+    getAvatar = buildAvatarPicker(document.getElementById('avatarPicker'), me.avatar || null);
+  } catch {
+    // If the API is unreachable the picker still works, just without a preview
+    getAvatar = buildAvatarPicker(document.getElementById('avatarPicker'), null);
+  }
+})();
+
+document.getElementById('updateForm').addEventListener('submit', async (e) => {
   e.preventDefault();
+  errorEl.hidden = true;
+  okEl.hidden = true;
 
-  const formData = new FormData(e.target);
+  const button = e.target.querySelector('button[type="submit"]');
+  button.disabled = true;
 
-  const res = await api("/update-profile", {
-    method: "POST",
-    body: formData
-  });
+  // Only send fields the user actually filled in
+  const payload = {};
+  const username = document.getElementById('username').value.trim();
+  const bio = document.getElementById('bio').value;
+  const password = document.getElementById('password').value;
+  const avatar = getAvatar();
 
-  const data = await res.json();
-  if (data.success) location.href = "/profile";
-  else alert(data.error);
+  if (username) payload.username = username;
+  if (bio !== '') payload.bio = bio;
+  if (password) payload.password = password;
+  if (avatar) payload.avatar = avatar;
+
+  try {
+    const res = await api('/update-profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (data.success) {
+      okEl.hidden = false;
+      setTimeout(() => { location.href = '/profile.html'; }, 600);
+    } else {
+      errorEl.textContent = data.error || 'Could not save changes';
+      errorEl.hidden = false;
+    }
+  } catch {
+    errorEl.textContent = 'Could not reach the server.';
+    errorEl.hidden = false;
+  } finally {
+    button.disabled = false;
+  }
 });
 </script>
 

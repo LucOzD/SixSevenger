@@ -62,7 +62,19 @@ check('missing cookie returns null', readCookie(cookieReq, 'nope') === null);
 check('session tokens are long and random', newSessionToken().length >= 40);
 check('session tokens are unique', newSessionToken() !== newSessionToken());
 
-console.log('\n5. Router dispatch');
+console.log('\n5. Emoji avatar validation');
+const { sanitiseAvatar } = await import('./src/routes/auth-routes.js');
+check('accepts a plain emoji', sanitiseAvatar('😎') === '😎');
+check('accepts a multi-codepoint emoji', sanitiseAvatar('☀️') === '☀️');
+check('trims whitespace', sanitiseAvatar('  🔥  ') === '🔥');
+check('rejects nothing', sanitiseAvatar(null) === null && sanitiseAvatar('') === null);
+check('rejects ordinary text', sanitiseAvatar('hello') === null);
+check('rejects a URL path', sanitiseAvatar('/default.png') === null);
+check('rejects HTML injection', sanitiseAvatar('<img>') === null);
+check('rejects a quote character', sanitiseAvatar('"') === null);
+check('rejects an over-long value', sanitiseAvatar('😎😎😎😎😎😎😎😎😎😎') === null);
+
+console.log('\n6. Router dispatch');
 // Minimal D1 stub: enough for /health and a 404, no query execution needed
 const stubDb = {
   prepare() {

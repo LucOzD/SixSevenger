@@ -10,14 +10,14 @@ async function loadUser() {
     return;
   }
 
-  const profilePic = document.getElementById("profilePic");
+  const avatar = document.getElementById("avatar");
   const profileUsername = document.getElementById("profileUsername");
   const profileBio = document.getElementById("profileBio");
   const followInfo = document.getElementById("followInfo");
   const followButton = document.getElementById("followButton");
   const acceptFollowButton = document.getElementById("acceptFollowButton");
 
-  if (profilePic) profilePic.src = data.user.profilePic || "/default.png";
+  if (avatar) avatar.innerHTML = avatarHtml(data.user.avatar, data.user.username, 120);
   if (profileUsername) profileUsername.textContent = data.user.username || "Guest";
   if (profileBio) profileBio.textContent = data.user.bio || "";
   if (followInfo) followInfo.textContent = `${data.followers || 0} follower(s) · ${data.following || 0} following`;
