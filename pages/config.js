@@ -10,7 +10,7 @@
 //
 // Set API_BASE to your deployed Worker URL after running `wrangler deploy`.
 
-const PRODUCTION_API = 'https://sixsevenger-api.YOUR-SUBDOMAIN.workers.dev';
+const PRODUCTION_API = 'https://sixsevenger-api.lucas-a93.workers.dev/';
 const LOCAL_API = 'http://127.0.0.1:8787';
 
 // Use the local Worker when browsing from localhost, production otherwise
