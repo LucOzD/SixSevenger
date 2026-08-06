@@ -9,7 +9,7 @@ compatibility_date = "2026-08-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "sixsevenger"
-database_id = "REPLACE_WITH_YOUR_DATABASE_ID"
+database_id = "b8985d4f-abb0-48d7-81d2-0f059e216cb6"
 
 [vars]
 # Origins allowed to call this API with credentials. A wildcard is not possible
