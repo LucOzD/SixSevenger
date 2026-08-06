@@ -5,7 +5,7 @@ import { json, badRequest, unauthorized, forbidden, notFound, readJson, uuid } f
 import {
   loadAnalyser, saveAnalyser, recordCategoryScoreStmt,
   getUserInterests, getUserSentimentPref, getCollaborativeScores,
-  getRelevantAccountIds,
+  getRelevantAccountIds, tokenCountStatements, promotePhrases,
 } from '../storage.js';
 import { UserProfiler, SIGNAL_WEIGHTS, POST_INTEREST_WEIGHT } from '../recommender.js';
 
@@ -13,6 +13,10 @@ export const MAX_POST_LENGTH = 100;
 export const MAX_COMMENT_LENGTH = 100;
 
 const HASHTAG_INTEREST_WEIGHT = 0.05;
+
+// How often to rescore collocations. Doing it on every post would mean an extra
+// read of the top pairs plus a full rewrite of the phrase table each time.
+const PHRASE_REVIEW_EVERY = 20;
 
 // ---------------------------------------------------------------------------
 // Create a post
@@ -92,8 +96,24 @@ export async function handleSavePost(ctx) {
     );
   }
 
+  // Feed this post's words into the collocation counts
+  statements.push(...tokenCountStatements(db, result.tokens));
+  analyser.totalTokens = (analyser.totalTokens || 0) + result.tokens.length;
+
   await db.batch(statements);
   await saveAnalyser(db, analyser);
+
+  // Periodically rescore which word pairs count as phrases
+  let newPhrases = null;
+  if (analyser.postCount % PHRASE_REVIEW_EVERY === 0) {
+    try {
+      const selected = await promotePhrases(db, analyser.totalTokens);
+      newPhrases = selected.map((p) => p.phrase);
+    } catch (err) {
+      // A failure here must not cost the user their post
+      console.error('Phrase promotion failed:', err?.stack || err);
+    }
+  }
 
   return json({
     success: true,
@@ -103,6 +123,7 @@ export async function handleSavePost(ctx) {
     sentiment: result.sentiment,
     hashtags: result.hashtags,
     splitInto: result.splitInto,
+    phrasesReviewed: newPhrases, // null unless a review ran on this post
   }, { request, env });
 }
 

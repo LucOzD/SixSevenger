@@ -138,6 +138,36 @@ export async function handleAdminCategories(ctx) {
   return json(analyser.categoriesOverview(), { request, env });
 }
 
+/** Learned collocations, strongest first, for inspecting what the model found. */
+export async function handleAdminPhrases(ctx) {
+  const denied = requireAdmin(ctx);
+  if (denied) return denied;
+
+  const { request, env, db } = ctx;
+  const rows = await db
+    .prepare(
+      `SELECT phrase, token, score, cohesion, count FROM phrases
+        ORDER BY count DESC LIMIT 200`
+    )
+    .all();
+
+  const totals = await db
+    .prepare("SELECT value FROM model_meta WHERE key = 'totalTokens'")
+    .first();
+
+  return json({
+    total_tokens: Number(totals?.value ?? 0),
+    phrase_count: (rows.results || []).length,
+    phrases: (rows.results || []).map((r) => ({
+      phrase: r.phrase,
+      token: r.token,
+      occurrences: r.count,
+      score: Math.round(r.score * 10) / 10,
+      cohesion: Math.round(r.cohesion * 100) / 100,
+    })),
+  }, { request, env });
+}
+
 export async function handleAdminUserInterests(ctx, params) {
   const denied = requireAdmin(ctx);
   if (denied) return denied;

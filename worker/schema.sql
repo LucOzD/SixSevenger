@@ -156,10 +156,39 @@ CREATE TABLE IF NOT EXISTS categories (
   vectors         TEXT             -- JSON array of recent vectors, for split checks
 );
 
--- Scalars that used to be PostAnalyser instance fields (nextId, postCount)
+-- Scalars that used to be PostAnalyser instance fields (nextId, postCount),
+-- plus totalTokens which phrase scoring needs.
 CREATE TABLE IF NOT EXISTS model_meta (
   key   TEXT PRIMARY KEY,
   value TEXT
+);
+
+-- ---------------------------------------------------------------- phrases
+-- Collocation detection. Word pairs that appear together far more often than
+-- chance get promoted to single tokens, so "geometry dash" stops competing
+-- with "geometry" and "dash" as separate features.
+CREATE TABLE IF NOT EXISTS token_counts (
+  token TEXT PRIMARY KEY,
+  count INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS bigram_counts (
+  bigram      TEXT PRIMARY KEY,
+  left_token  TEXT,
+  right_token TEXT,
+  count       INTEGER DEFAULT 0
+);
+
+-- Promotion scans the most frequent pairs first
+CREATE INDEX IF NOT EXISTS idx_bigram_counts_count ON bigram_counts(count DESC);
+
+CREATE TABLE IF NOT EXISTS phrases (
+  phrase   TEXT PRIMARY KEY,   -- "geometry dash"
+  token    TEXT,               -- "geometry_dash"
+  score    REAL,
+  cohesion REAL,
+  count    INTEGER,
+  created  INTEGER
 );
 
 -- ---------------------------------------------------------------- sessions

@@ -8,6 +8,9 @@
 // them and only the category a new post lands in has its vectors fetched.
 
 import { PostAnalyser } from './recommender.js';
+import {
+  countTokens, selectPhrases, phraseToToken, PHRASE_MIN_COUNT,
+} from './phrases.js';
 
 function parseJson(value, fallback) {
   if (!value) return fallback;
@@ -23,13 +26,14 @@ function parseJson(value, fallback) {
  * needed when checking whether a category should split.
  */
 export async function loadAnalyser(db, { withVectors = false } = {}) {
-  const [catRows, metaRows] = await Promise.all([
+  const [catRows, metaRows, phraseRows] = await Promise.all([
     db.prepare(
       withVectors
         ? 'SELECT id, centroid, n_posts, word_counts, category_words, sentiment, sentiment_count, vectors FROM categories'
         : 'SELECT id, centroid, n_posts, word_counts, category_words, sentiment, sentiment_count FROM categories'
     ).all(),
     db.prepare('SELECT key, value FROM model_meta').all(),
+    db.prepare('SELECT phrase FROM phrases').all(),
   ]);
 
   const state = {
@@ -41,6 +45,7 @@ export async function loadAnalyser(db, { withVectors = false } = {}) {
     categoryVectors: {},
     nextId: 0,
     postCount: 0,
+    phrases: new Set((phraseRows.results || []).map((r) => r.phrase)),
   };
 
   for (const row of catRows.results || []) {
@@ -58,8 +63,11 @@ export async function loadAnalyser(db, { withVectors = false } = {}) {
   for (const row of metaRows.results || []) meta[row.key] = row.value;
   state.nextId = Number(meta.nextId ?? 0);
   state.postCount = Number(meta.postCount ?? 0);
+  state.totalTokens = Number(meta.totalTokens ?? 0);
 
-  return new PostAnalyser({}, state);
+  const analyser = new PostAnalyser({}, state);
+  analyser.totalTokens = state.totalTokens;
+  return analyser;
 }
 
 /** Fetch just one category's tracked vectors, for a split check. */
@@ -119,11 +127,102 @@ export async function saveAnalyser(db, analyser) {
         `INSERT INTO model_meta (key, value) VALUES ('postCount', ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`
       )
-      .bind(String(analyser.postCount))
+      .bind(String(analyser.postCount)),
+    db
+      .prepare(
+        `INSERT INTO model_meta (key, value) VALUES ('totalTokens', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+      )
+      .bind(String(analyser.totalTokens ?? 0))
   );
 
   if (statements.length > 0) await db.batch(statements);
   analyser.dirty.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Phrases (collocation detection)
+// ---------------------------------------------------------------------------
+
+/** The current phrase set, used by the vectorizer to merge tokens. */
+export async function loadPhrases(db) {
+  const rows = await db.prepare('SELECT phrase FROM phrases').all();
+  return new Set((rows.results || []).map((r) => r.phrase));
+}
+
+/**
+ * Fold one post's token and pair counts into the running totals.
+ * Returns statements for the caller to batch alongside its other writes.
+ */
+export function tokenCountStatements(db, tokens) {
+  const { unigrams, bigrams } = countTokens(tokens);
+  const statements = [];
+
+  for (const [token, count] of unigrams) {
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO token_counts (token, count) VALUES (?, ?)
+           ON CONFLICT(token) DO UPDATE SET count = count + excluded.count`
+        )
+        .bind(token, count)
+    );
+  }
+
+  for (const [bigram, count] of bigrams) {
+    const spaceAt = bigram.indexOf(' ');
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO bigram_counts (bigram, left_token, right_token, count)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(bigram) DO UPDATE SET count = count + excluded.count`
+        )
+        .bind(bigram, bigram.slice(0, spaceAt), bigram.slice(spaceAt + 1), count)
+    );
+  }
+
+  return statements;
+}
+
+/**
+ * Rescore candidate pairs and rewrite the phrase table.
+ *
+ * Deliberately not run on every post: it reads the top pairs and rewrites the
+ * table, so it runs every PHRASE_REVIEW_EVERY posts instead.
+ */
+export async function promotePhrases(db, totalTokens) {
+  const rows = await db
+    .prepare(
+      `SELECT b.bigram, b.count, l.count AS leftCount, r.count AS rightCount
+         FROM bigram_counts b
+         JOIN token_counts l ON l.token = b.left_token
+         JOIN token_counts r ON r.token = b.right_token
+        WHERE b.count >= ? AND b.left_token != b.right_token
+        ORDER BY b.count DESC
+        LIMIT 1000`
+    )
+    .bind(PHRASE_MIN_COUNT)
+    .all();
+
+  const selected = selectPhrases(rows.results || [], totalTokens);
+  const now = Date.now();
+
+  // Replace wholesale, so a pair that no longer qualifies is dropped
+  const statements = [db.prepare('DELETE FROM phrases')];
+  for (const p of selected) {
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO phrases (phrase, token, score, cohesion, count, created)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        )
+        .bind(p.phrase, phraseToToken(p.phrase), p.score, p.cohesion, p.count, now)
+    );
+  }
+
+  await db.batch(statements);
+  return selected;
 }
 
 // ---------------------------------------------------------------------------

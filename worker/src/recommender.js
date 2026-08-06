@@ -17,7 +17,7 @@
 //     and the behaviour is testable.
 
 import {
-  vectorize, cleanText, extractHashtags,
+  vectorize, cleanText, extractHashtags, tokenize,
   cosineSimilarity, sharedFeatureCount, updateMean, meanVector, norm,
 } from './vectorizer.js';
 import { ENGLISH_STOP_WORDS } from './stopwords.js';
@@ -128,6 +128,12 @@ export class PostAnalyser {
     this.nextId = state.nextId ?? 0;
     this.postCount = state.postCount ?? 0;
 
+    // Learned collocations, e.g. "geometry dash". Merged into single tokens at
+    // vectorisation time so a phrase outweighs the words composing it.
+    this.phrases = state.phrases instanceof Set
+      ? state.phrases
+      : new Set(state.phrases || []);
+
     // Categories touched since load, so the caller only writes what changed
     this.dirty = new Set();
   }
@@ -145,7 +151,7 @@ export class PostAnalyser {
    */
   addPost(text, authorContext = null) {
     const cleaned = cleanText(text);
-    const vector = vectorize(cleaned);
+    const vector = vectorize(cleaned, this.phrases);
     const rawSentiment = sentimentScore(text);
 
     // Lean on the author's history when the post itself is ambiguous
@@ -198,6 +204,8 @@ export class PostAnalyser {
       sentiment,
       hashtags: extractHashtags(text),
       splitInto, // new category id if this post triggered a split
+      // Raw tokens, so the caller can fold them into the phrase counts
+      tokens: tokenize(cleaned),
     };
   }
 

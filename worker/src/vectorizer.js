@@ -100,19 +100,83 @@ export function buildNgrams(tokens) {
   return features;
 }
 
+// How much weight a phrase's constituent words keep. "geometry dash" becoming
+// one token should not erase "geometry" entirely — a post about geometry
+// homework still deserves partial similarity — but it should not compete with
+// the phrase either.
+export const PHRASE_PART_WEIGHT = 0.3;
+
+// Longest phrase length considered. Phrases can themselves be merged on a later
+// pass, so a promoted "geometry_dash" plus "levels" can become a longer phrase
+// over time without needing to scan further here.
+const MAX_PHRASE_TOKENS = 3;
+
+/**
+ * Merge known phrases into single units, longest match first.
+ *
+ * @param tokens tokenised text
+ * @param phraseSet Set of space-joined phrases, e.g. "geometry dash"
+ * @returns [{ token, parts }] where parts is null for ordinary words
+ */
+export function applyPhrases(tokens, phraseSet) {
+  if (!phraseSet || phraseSet.size === 0) {
+    return tokens.map((t) => ({ token: t, parts: null }));
+  }
+
+  const units = [];
+  let i = 0;
+
+  while (i < tokens.length) {
+    let matched = false;
+
+    // Greedy longest match, so "six seven savant" wins over "six seven"
+    for (let len = MAX_PHRASE_TOKENS; len >= 2; len--) {
+      if (i + len > tokens.length) continue;
+      const candidate = tokens.slice(i, i + len).join(' ');
+      if (phraseSet.has(candidate)) {
+        units.push({ token: candidate.replace(/ /g, '_'), parts: tokens.slice(i, i + len) });
+        i += len;
+        matched = true;
+        break;
+      }
+    }
+
+    if (!matched) {
+      units.push({ token: tokens[i], parts: null });
+      i++;
+    }
+  }
+
+  return units;
+}
+
 // ---------------------------------------------------------------------------
 // Vectorise text into a sparse, L2-normalised map of { index: value }.
 // Sparse is used rather than a 4096-length array because posts are short —
 // typically well under 30 non-zero features — which keeps D1 rows small.
 // ---------------------------------------------------------------------------
-export function vectorize(text, nFeatures = DEFAULT_N_FEATURES) {
-  const features = buildNgrams(tokenize(text));
-  const counts = new Map();
+export function vectorize(text, phraseSet = null, nFeatures = DEFAULT_N_FEATURES) {
+  const tokens = tokenize(text);
+  const units = applyPhrases(tokens, phraseSet);
 
-  for (const feature of features) {
+  // Weighted feature counts. Phrase tokens and ordinary words count 1; the
+  // words making up a phrase are damped so the phrase dominates.
+  const counts = new Map();
+  const add = (feature, weight) => {
     const index = murmurhash3_32(feature) % nFeatures;
-    // alternate_sign=False, so every occurrence adds +1
-    counts.set(index, (counts.get(index) || 0) + 1);
+    counts.set(index, (counts.get(index) || 0) + weight);
+  };
+
+  for (const unit of units) {
+    add(unit.token, 1);
+    if (unit.parts) {
+      for (const part of unit.parts) add(part, PHRASE_PART_WEIGHT);
+    }
+  }
+
+  // Bigrams over the merged units, so "geometry_dash levels" is still captured
+  for (let i = 0; i < units.length - 1; i++) {
+    add(`${units[i].token} ${units[i + 1].token}`, 1);
   }
 
   // L2 normalise

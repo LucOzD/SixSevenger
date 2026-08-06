@@ -182,6 +182,40 @@ check('opposite-sentiment category scores lower with the penalty applied',
 check('the user\'s own category is unaffected',
   Math.abs(scoreOf(withPenalty, 0) - scoreOf(withoutPenalty, 0)) < 1e-9);
 
+console.log('\n9b. Phrases keep an unrelated use of a topic word separate');
+// "geometry dash" (the game) versus "geometry" (the school subject). Without
+// phrase merging these share a strong feature and risk landing together.
+const gdPosts = [
+  'geometry dash is peak gaming', 'geometry dash levels are fun',
+  'geometry dash is amazing', 'i love geometry dash',
+];
+const mathsPosts = [
+  'geometry homework is due tomorrow', 'geometry test went badly',
+  'geometry revision all evening', 'i hate geometry homework',
+];
+
+function categoriesFor(analyserInstance, list) {
+  return new Set(list.map((t) => analyserInstance.addPost(t).categoryId));
+}
+
+const withoutPhrases = new PostAnalyser();
+const gdNoPhrase = categoriesFor(withoutPhrases, gdPosts);
+const mathsNoPhrase = categoriesFor(withoutPhrases, mathsPosts);
+const overlapNoPhrase = [...gdNoPhrase].filter((c) => mathsNoPhrase.has(c));
+
+const withPhrases = new PostAnalyser({}, { phrases: new Set(['geometry dash']) });
+const gdPhrase = categoriesFor(withPhrases, gdPosts);
+const mathsPhrase = categoriesFor(withPhrases, mathsPosts);
+const overlapPhrase = [...gdPhrase].filter((c) => mathsPhrase.has(c));
+
+console.log(`     without phrases: gd=${[...gdNoPhrase]} maths=${[...mathsNoPhrase]} shared=${overlapNoPhrase.length}`);
+console.log(`     with phrases   : gd=${[...gdPhrase]} maths=${[...mathsPhrase]} shared=${overlapPhrase.length}`);
+check('phrase merging does not increase category overlap',
+  overlapPhrase.length <= overlapNoPhrase.length);
+check('phrase set is carried on the analyser', withPhrases.phrases.has('geometry dash'));
+check('tokens are returned for phrase counting',
+  Array.isArray(withPhrases.addPost('geometry dash rocks').tokens));
+
 console.log('\n10. Signal weights match the Express server');
 check('like weight', SIGNAL_WEIGHTS.like === 0.20);
 check('dislike weight is stronger than like', Math.abs(SIGNAL_WEIGHTS.dislike) > SIGNAL_WEIGHTS.like);

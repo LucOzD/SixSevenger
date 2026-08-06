@@ -30,7 +30,8 @@ import {
 } from './routes/social-routes.js';
 
 import {
-  handleHashtag, handleAdminUsers, handleAdminCategories, handleAdminUserInterests,
+  handleHashtag, handleAdminUsers, handleAdminCategories,
+  handleAdminUserInterests, handleAdminPhrases,
 } from './routes/misc-routes.js';
 
 // Route table. Order matters only where patterns could overlap; these do not.
@@ -67,6 +68,7 @@ const ROUTES = [
 
   ['GET',  '/admin/users',               handleAdminUsers],
   ['GET',  '/admin/categories',          handleAdminCategories],
+  ['GET',  '/admin/phrases',             handleAdminPhrases],
   ['GET',  '/admin/user/:id/interests',  handleAdminUserInterests],
 ];
 

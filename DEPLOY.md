@@ -308,6 +308,50 @@ either — see the avatar note below.
 
 ---
 
+## Phrase detection
+
+Word pairs that occur together far more often than chance get promoted to a
+single token. "geometry dash" becomes one feature `geometry_dash` instead of
+competing with "geometry" and "dash" separately.
+
+The constituent words are **damped, not removed** — they keep 30% weight, so a
+post about geometry homework still registers partial similarity with a Geometry
+Dash post rather than none at all.
+
+Two measures decide promotion, and a pair qualifies on either:
+
+- **Score** — the word2vec phrase measure, `(count(ab) - discount) / (count(a) *
+  count(b)) * totalTokens`. Good at spotting rare-but-exclusive pairs.
+- **Cohesion** — of all the times the rarer word appears, how often is it in this
+  pair? Good at spotting frequent pairs.
+
+Both are needed. Measured on real posts, "paul hogan" (4 occurrences) scored 59
+on the first measure while "six seven" (32 occurrences, essentially never apart)
+scored only 10 — the obvious phrase lost to the rare one, because that measure
+divides by the product of individual counts and so penalises frequency. Cohesion
+catches it at 0.97, where incidental pairs like "hate geometry" sit at 0.56.
+
+Self-pairs are excluded. Repeating hashtags to weight them produces runs like
+"gdsucks gdsucks gdsucks", which otherwise look like a strong collocation.
+
+Review runs every 20 posts rather than on every post, since it rescans the top
+pairs and rewrites the table. If it fails, the post is still saved.
+
+Inspect what has been learned (as the admin user):
+
+```
+GET /admin/phrases
+```
+
+On the current sample data it finds: `paul hogan`, `coca cola`, `robert topalo`,
+`geometry dash`, `six seven`.
+
+Thresholds live in `worker/src/phrases.js` and are covered by
+`npm run test:phrases`, which scores real posts and asserts the right pairs are
+promoted.
+
+---
+
 ## Avatars are emoji, not uploads
 
 The Express version saved uploaded images to disk with multer. Workers have no
