@@ -5,7 +5,7 @@
   <title>Login</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/config.js"></script>
-<script src="/avatar.js"></script>
+  <script src="/avatar.js"></script>
 </head>
 <body>
 
@@ -13,58 +13,71 @@
   <div class="nav-left">
     <span class="logo">MyApp</span>
   </div>
+  <div class="nav-right">
+    <button onclick="location.href='/index.html'">Home</button>
+  </div>
 </nav>
 
 <div class="form-container">
   <h2>Login</h2>
 
   <form id="loginForm">
-    <input name="username" placeholder="Username" required>
-    <input name="password" type="password" placeholder="Password" required>
+    <label for="username">Username</label>
+    <input id="username" name="username" placeholder="Username" required autocomplete="username">
+
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" placeholder="Password" required
+           autocomplete="current-password">
 
     <button class="submit-btn" type="submit">Login</button>
   </form>
 
-  <p id="loginError" style="color:red; display:none; margin-top:10px;"></p>
+  <p id="loginError" class="form-error" role="alert" hidden></p>
 
   <p style="margin-top:10px;">
-    Don't have an account? <a href="/signup">Sign up</a>
+    Don't have an account? <a href="/signup.html">Sign up</a>
   </p>
 </div>
 
 <script>
-document.getElementById("loginForm").addEventListener("submit", async (e) => {
+const errorEl = document.getElementById('loginError');
+
+function showError(message) {
+  errorEl.textContent = message;
+  errorEl.hidden = false;
+}
+
+document.getElementById('loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
+  errorEl.hidden = true;
 
-  const formData = new FormData(e.target);
-  const username = formData.get("username").trim();
-  const password = formData.get("password").trim();
+  const button = e.target.querySelector('button[type="submit"]');
+  button.disabled = true;
 
-  const res = await api("/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password })
-  });
-
-  let data;
   try {
-    data = await res.json();
+    const res = await api('/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: document.getElementById('username').value.trim(),
+        password: document.getElementById('password').value,
+      }),
+    });
+
+    const data = await res.json().catch(() => ({ error: 'Unexpected response from server' }));
+
+    if (data.success) {
+      location.href = '/index.html';
+    } else {
+      showError(data.error || 'Could not log in');
+    }
   } catch (err) {
-    document.getElementById("loginError").textContent =
-      "Server error. Please try again.";
-    document.getElementById("loginError").style.display = "block";
-    return;
+    // Covers the blocked-by-CORS case, which the browser reports as a bare
+    // TypeError with no detail
+    showError(apiErrorMessage(err));
+  } finally {
+    button.disabled = false;
   }
-
-  if (data.error) {
-    const errBox = document.getElementById("loginError");
-    errBox.textContent = data.error;
-    errBox.style.display = "block";
-    return;
-  }
-
-  // Success → go home
-  window.location.href = "/";
 });
 </script>
 

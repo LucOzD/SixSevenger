@@ -113,20 +113,47 @@ https://sixsevenger.pages.dev
 
 This step is easy to miss and **nothing will work without it**. The browser
 blocks cross-origin requests carrying cookies unless the API explicitly names
-the calling origin.
+the calling origin — and it hides the reason from the page, so the only symptom
+is a generic "could not reach the API" message.
 
-In `worker/wrangler.toml`, add your Pages URL to `ALLOWED_ORIGINS`:
+`ALLOWED_ORIGINS` in `worker/wrangler.toml` is already set up for a Pages
+project named `sixsevenger`:
 
 ```toml
-ALLOWED_ORIGINS = "https://sixsevenger.pages.dev,http://localhost:8788"
+ALLOWED_ORIGINS = "https://sixsevenger.pages.dev,https://*.sixsevenger.pages.dev,http://localhost:8788,http://127.0.0.1:8788"
 ```
 
-Then redeploy the Worker:
+**If Step 5 printed a different URL, change both `sixsevenger` entries to
+match.** Then redeploy the Worker so the change takes effect:
 
 ```
 cd worker
 npx wrangler deploy
 ```
+
+The `*.` wildcard is there because Pages gives every deployment its own
+subdomain, like `a1b2c3.sixsevenger.pages.dev`. Without it, preview builds would
+all be blocked even though production worked.
+
+It is scoped to your project's subdomains deliberately. Do not widen it to
+`https://*.pages.dev` — that would let any site hosted on Pages call your API
+using a logged-in visitor's cookie. The Worker refuses a wildcard that broad
+anyway.
+
+To check what the API thinks, open this in a browser:
+
+```
+https://sixsevenger-api.YOUR-SUBDOMAIN.workers.dev/health
+```
+
+It reports the D1 binding status and the origins it accepts. Called from your
+site's console it also reports whether *your* origin passes:
+
+```js
+fetch(API_BASE + '/health', { credentials: 'include' }).then(r => r.json()).then(console.log)
+```
+
+Look for `"originAllowed": true`.
 
 Now open your Pages URL and create an account.
 
@@ -227,10 +254,22 @@ too:
 
 ## Troubleshooting
 
+**"Could not reach the API" when signing up or logging in.**
+This is nearly always CORS, not connectivity. The browser blocks the request and
+refuses to tell the page why, so it surfaces as a network error.
+
+1. Open `<your-worker-url>/health` in a browser. If that fails, the Worker
+   itself is not deployed.
+2. If it works, check `allowedOrigins` in the response includes your Pages URL.
+3. Fix `ALLOWED_ORIGINS` in `worker/wrangler.toml`, then **redeploy the Worker** —
+   editing the file alone changes nothing.
+4. Run `npx wrangler tail` and retry. A rejected origin logs the exact value it
+   saw and what it expected.
+
 **Everything returns 401, or you cannot stay logged in.**
-Almost always CORS or cookies. Check that your exact Pages origin is in
-`ALLOWED_ORIGINS` (scheme included, no trailing slash) and that you redeployed
-the Worker afterwards. Locally, check `SESSION_SAMESITE = "Lax"`.
+The request is getting through but the session cookie is not sticking. Check
+`SESSION_SAMESITE` is `"None"` in production (it needs HTTPS), or `"Lax"` for
+local HTTP.
 
 **`D1 binding "DB" is missing`.**
 `database_id` in `wrangler.toml` is still the placeholder, or you deployed

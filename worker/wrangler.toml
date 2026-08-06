@@ -15,7 +15,14 @@ database_id = "b8985d4f-abb0-48d7-81d2-0f059e216cb6"
 # Origins allowed to call this API with credentials. A wildcard is not possible
 # here: browsers reject "*" when a request carries cookies, so each frontend
 # origin must be listed explicitly. Add your Pages URL once you know it.
-ALLOWED_ORIGINS = "http://localhost:8788,http://127.0.0.1:8788"
+# The `*.` wildcard covers Pages preview deployments, which each get their own
+# subdomain. It is scoped to this one project on purpose — a bare
+# "https://*.pages.dev" would let any site hosted on Pages call this API with a
+# logged-in visitor's cookie.
+#
+# If your Pages project is not called "sixsevenger", change both entries below
+# to match the URL that `wrangler pages deploy` printed.
+ALLOWED_ORIGINS = "https://sixsevenger.pages.dev,https://*.sixsevenger.pages.dev,http://localhost:8788,http://127.0.0.1:8788"
 
 # Session cookies use SameSite=None so they work across the Pages and Worker
 # domains, which also requires Secure (HTTPS). For local HTTP development set

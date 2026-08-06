@@ -7,7 +7,10 @@
 // the route table, run the handler. Handlers receive a ctx object holding the
 // request, env, D1 binding and the resolved user.
 
-import { corsHeaders, json, notFound, matchPath } from './http.js';
+import {
+  corsHeaders, json, notFound, matchPath,
+  isOriginAllowed, parseAllowedOrigins,
+} from './http.js';
 import { getSessionUser, readCookie } from './auth.js';
 
 import {
@@ -71,6 +74,18 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    // Warn loudly on a rejected origin. The browser hides the reason from the
+    // page, so without this the only symptom is a generic network error.
+    // Visible via: npx wrangler tail
+    const origin = request.headers.get('Origin');
+    if (origin && !isOriginAllowed(origin, parseAllowedOrigins(env))) {
+      console.warn(
+        `CORS: rejected origin ${origin}. ` +
+        `Add it to ALLOWED_ORIGINS in wrangler.toml and redeploy. ` +
+        `Currently allowed: ${JSON.stringify(parseAllowedOrigins(env))}`
+      );
+    }
+
     // CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders(request, env) });
@@ -83,9 +98,19 @@ export default {
       );
     }
 
-    // Health check, useful for confirming a deploy works before wiring the UI
+    // Health check. Also reports how CORS sees the caller, because a blocked
+    // origin looks identical to an unreachable server from the browser's side.
     if (url.pathname === '/health') {
-      return json({ ok: true, time: Date.now() }, { request, env });
+      const origin = request.headers.get('Origin');
+      const allowed = parseAllowedOrigins(env);
+      return json({
+        ok: true,
+        time: Date.now(),
+        database: env.DB ? 'bound' : 'MISSING',
+        yourOrigin: origin || '(none - opened directly)',
+        originAllowed: origin ? isOriginAllowed(origin, allowed) : null,
+        allowedOrigins: allowed,
+      }, { request, env });
     }
 
     const db = env.DB;

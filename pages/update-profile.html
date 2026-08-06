@@ -105,8 +105,8 @@ document.getElementById('updateForm').addEventListener('submit', async (e) => {
       errorEl.textContent = data.error || 'Could not save changes';
       errorEl.hidden = false;
     }
-  } catch {
-    errorEl.textContent = 'Could not reach the server.';
+  } catch (err) {
+    errorEl.textContent = apiErrorMessage(err);
     errorEl.hidden = false;
   } finally {
     button.disabled = false;

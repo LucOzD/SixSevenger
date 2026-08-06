@@ -19,7 +19,28 @@ check('params extracted', m && m.params.id === 'abc-123', JSON.stringify(m?.para
 const enc = matchPath('/api/hashtag/:tag', '/api/hashtag/six%20seven');
 check('params url-decoded', enc && enc.params.tag === 'six seven', JSON.stringify(enc?.params));
 
-console.log('\n2. CORS');
+console.log('\n2a. Origin allow-listing');
+const { isOriginAllowed, parseAllowedOrigins } = await import('./src/http.js');
+const projectList = ['https://sixsevenger.pages.dev', 'https://*.sixsevenger.pages.dev'];
+check('exact production origin allowed',
+  isOriginAllowed('https://sixsevenger.pages.dev', projectList));
+check('preview deployment subdomain allowed',
+  isOriginAllowed('https://a1b2c3.sixsevenger.pages.dev', projectList));
+check('another project on pages.dev is rejected',
+  !isOriginAllowed('https://someoneelse.pages.dev', projectList));
+check('lookalike domain rejected',
+  !isOriginAllowed('https://sixsevenger.pages.dev.evil.com', projectList));
+check('http against an https entry rejected',
+  !isOriginAllowed('http://sixsevenger.pages.dev', projectList));
+check('empty origin rejected', !isOriginAllowed('', projectList));
+// A wildcard broad enough to cover unrelated sites must not be honoured
+check('bare *.pages.dev wildcard refused',
+  !isOriginAllowed('https://anything.pages.dev', ['https://*.pages.dev']));
+check('trailing slashes in config tolerated',
+  parseAllowedOrigins({ ALLOWED_ORIGINS: 'https://a.example/, https://b.example' })
+    .join(',') === 'https://a.example,https://b.example');
+
+console.log('\n2b. CORS headers');
 const env = { ALLOWED_ORIGINS: 'https://sixsevenger.pages.dev,http://localhost:8788' };
 const allowedReq = new Request('https://api.test/me', {
   headers: { Origin: 'https://sixsevenger.pages.dev' },

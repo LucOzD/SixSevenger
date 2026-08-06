@@ -6,12 +6,51 @@
  * and when credentials are involved the browser refuses a wildcard origin — so
  * the origin is echoed back, but only if it appears in ALLOWED_ORIGINS.
  */
+/**
+ * Is this origin permitted?
+ *
+ * Entries are matched exactly, except that a leading `*.` wildcard is allowed
+ * in the hostname — for example `https://*.sixsevenger.pages.dev`.
+ *
+ * The wildcard exists because Cloudflare Pages gives every deployment its own
+ * subdomain (`a1b2c3.sixsevenger.pages.dev`), so an exact-match list would
+ * reject every preview build.
+ *
+ * Note the wildcard is deliberately scoped to one project's subdomains. A bare
+ * `https://*.pages.dev` would let ANY site hosted on Pages make credentialed
+ * requests to this API using a logged-in visitor's cookie, so that is not
+ * something to configure.
+ */
+export function isOriginAllowed(origin, allowedList) {
+  if (!origin) return false;
+
+  for (const entry of allowedList) {
+    if (entry === origin) return true;
+
+    const wildcardAt = entry.indexOf('://*.');
+    if (wildcardAt === -1) continue;
+
+    const scheme = entry.slice(0, wildcardAt + 3);      // 'https:'
+    const suffix = entry.slice(wildcardAt + 4);          // '.sixsevenger.pages.dev'
+
+    // Refuse a suffix broad enough to cover unrelated sites, e.g. '.pages.dev'
+    if (suffix.split('.').filter(Boolean).length < 3) continue;
+
+    if (origin.startsWith(scheme) && origin.endsWith(suffix)) return true;
+  }
+  return false;
+}
+
+export function parseAllowedOrigins(env) {
+  return (env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((o) => o.trim().replace(/\/+$/, '')) // tolerate trailing slashes
+    .filter(Boolean);
+}
+
 export function corsHeaders(request, env) {
   const origin = request.headers.get('Origin') || '';
-  const allowed = (env.ALLOWED_ORIGINS || '')
-    .split(',')
-    .map((o) => o.trim())
-    .filter(Boolean);
+  const allowed = parseAllowedOrigins(env);
 
   const headers = {
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
@@ -21,7 +60,7 @@ export function corsHeaders(request, env) {
     Vary: 'Origin',
   };
 
-  if (origin && allowed.includes(origin)) {
+  if (isOriginAllowed(origin, allowed)) {
     headers['Access-Control-Allow-Origin'] = origin;
   }
   return headers;

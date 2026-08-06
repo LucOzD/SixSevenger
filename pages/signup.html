@@ -85,7 +85,7 @@ document.getElementById('signupForm').addEventListener('submit', async (e) => {
       showError(data.error || 'Could not create account');
     }
   } catch (err) {
-    showError('Could not reach the server. Is the API running?');
+    showError(apiErrorMessage(err));
   } finally {
     button.disabled = false;
   }
