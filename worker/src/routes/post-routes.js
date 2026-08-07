@@ -96,23 +96,27 @@ export async function handleSavePost(ctx) {
     );
   }
 
-  // Feed this post's words into the collocation counts
-  statements.push(...tokenCountStatements(db, result.tokens));
-  analyser.totalTokens = (analyser.totalTokens || 0) + result.tokens.length;
-
+  // Save the post itself first. Everything below is enrichment, and must not be
+  // able to lose the user's post if it fails.
   await db.batch(statements);
   await saveAnalyser(db, analyser);
 
-  // Periodically rescore which word pairs count as phrases
+  // Phrase counting is deliberately a separate batch. It writes to tables added
+  // after the first release, so on an un-migrated database these statements
+  // throw — and if they shared a batch with the INSERT above, the post would be
+  // lost rather than merely unanalysed.
   let newPhrases = null;
-  if (analyser.postCount % PHRASE_REVIEW_EVERY === 0) {
-    try {
+  try {
+    analyser.totalTokens = (analyser.totalTokens || 0) + result.tokens.length;
+    await db.batch(tokenCountStatements(db, result.tokens));
+
+    // Periodically rescore which word pairs count as phrases
+    if (analyser.postCount % PHRASE_REVIEW_EVERY === 0) {
       const selected = await promotePhrases(db, analyser.totalTokens);
       newPhrases = selected.map((p) => p.phrase);
-    } catch (err) {
-      // A failure here must not cost the user their post
-      console.error('Phrase promotion failed:', err?.stack || err);
     }
+  } catch (err) {
+    console.error('Phrase analysis skipped:', err?.message || err);
   }
 
   return json({

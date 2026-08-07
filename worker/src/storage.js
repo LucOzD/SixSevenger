@@ -21,6 +21,34 @@ function parseJson(value, fallback) {
   }
 }
 
+function isMissingTable(err) {
+  return /no such table/i.test(err?.message || '');
+}
+
+/**
+ * Run a query, tolerating the table not existing yet.
+ *
+ * Phrase detection added new tables after the first deploy. Without this, a
+ * database that has not had the latest schema applied throws "no such table"
+ * from loadAnalyser, which took down BOTH posting and the feed while login kept
+ * working — a confusing failure for an optional feature. The warning names the
+ * fix rather than failing silently.
+ */
+async function optionalQuery(db, sql, label) {
+  try {
+    return await db.prepare(sql).all();
+  } catch (err) {
+    if (isMissingTable(err)) {
+      console.warn(
+        `Schema out of date: ${label} unavailable (${err.message}). ` +
+        `Run: npx wrangler d1 execute sixsevenger --file=./schema.sql --remote`
+      );
+      return { results: [] };
+    }
+    throw err;
+  }
+}
+
 /**
  * Load the model. Omits per-category vectors unless asked, since they are only
  * needed when checking whether a category should split.
@@ -33,7 +61,8 @@ export async function loadAnalyser(db, { withVectors = false } = {}) {
         : 'SELECT id, centroid, n_posts, word_counts, category_words, sentiment, sentiment_count FROM categories'
     ).all(),
     db.prepare('SELECT key, value FROM model_meta').all(),
-    db.prepare('SELECT phrase FROM phrases').all(),
+    // Optional: phrase detection tables may not exist on an older schema
+    optionalQuery(db, 'SELECT phrase FROM phrases', 'phrase detection'),
   ]);
 
   const state = {
@@ -146,7 +175,7 @@ export async function saveAnalyser(db, analyser) {
 
 /** The current phrase set, used by the vectorizer to merge tokens. */
 export async function loadPhrases(db) {
-  const rows = await db.prepare('SELECT phrase FROM phrases').all();
+  const rows = await optionalQuery(db, 'SELECT phrase FROM phrases', 'phrase detection');
   return new Set((rows.results || []).map((r) => r.phrase));
 }
 

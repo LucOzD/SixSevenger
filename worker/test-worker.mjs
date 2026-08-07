@@ -165,13 +165,25 @@ check('rejects a quote character', sanitiseAvatar('"') === null);
 check('rejects an over-long value', sanitiseAvatar('😎😎😎😎😎😎😎😎😎😎') === null);
 
 console.log('\n6. Router dispatch');
+// Every table schema.sql creates, so stubs can present a complete schema
+const ALL_TABLES = [
+  'users', 'posts', 'likes', 'comments', 'follow_requests', 'follows',
+  'notifications', 'user_interests', 'engagement', 'feed_seen', 'hashtags',
+  'post_hashtags', 'categories', 'model_meta', 'sessions',
+  'token_counts', 'bigram_counts', 'phrases',
+];
+
 // Minimal D1 stub: enough for /health and a 404, no query execution needed
 const stubDb = {
-  prepare() {
+  prepare(sql) {
+    const all = async () =>
+      /sqlite_master/i.test(sql)
+        ? { results: ALL_TABLES.map((name) => ({ name })) }
+        : { results: [] };
     return {
-      bind: () => ({ first: async () => null, all: async () => ({ results: [] }), run: async () => ({}) }),
+      bind: () => ({ first: async () => null, all, run: async () => ({}) }),
       first: async () => null,
-      all: async () => ({ results: [] }),
+      all,
       run: async () => ({}),
     };
   },
@@ -229,22 +241,28 @@ console.log('\n7. A bearer token authenticates a request');
 const SESSION = 'valid-token-123';
 const USER = { id: 'u1', username: 'tester', avatar: null, bio: '', guest: 0 };
 function authStubDb() {
-  const make = (sql) => ({
-    bind: (...args) => ({
-      first: async () => {
-        if (/FROM sessions/i.test(sql)) {
-          return args[0] === SESSION ? { ...USER } : null;
-        }
-        if (/COUNT\(\*\)/i.test(sql)) return { c: 0 };
-        return null;
-      },
-      all: async () => ({ results: [] }),
+  const make = (sql) => {
+    const all = async () =>
+      /sqlite_master/i.test(sql)
+        ? { results: ALL_TABLES.map((name) => ({ name })) }
+        : { results: [] };
+    return {
+      bind: (...args) => ({
+        first: async () => {
+          if (/FROM sessions/i.test(sql)) {
+            return args[0] === SESSION ? { ...USER } : null;
+          }
+          if (/COUNT\(\*\)/i.test(sql)) return { c: 0 };
+          return null;
+        },
+        all,
+        run: async () => ({}),
+      }),
+      first: async () => null,
+      all,
       run: async () => ({}),
-    }),
-    first: async () => null,
-    all: async () => ({ results: [] }),
-    run: async () => ({}),
-  });
+    };
+  };
   return { prepare: make, batch: async () => [] };
 }
 
@@ -275,6 +293,76 @@ const viaCookie = await worker.fetch(
 );
 check('cookie transport still authenticates',
   (await viaCookie.json()).loggedIn === true);
+
+console.log('\n8. An out-of-date schema degrades instead of breaking');
+// This is the failure that took down posting and the feed: phrase detection
+// added tables, and on a database without them "no such table" propagated out
+// of loadAnalyser. Login kept working because it never touches the analyser.
+const EXISTING_TABLES = [
+  'users', 'posts', 'likes', 'comments', 'follow_requests', 'follows',
+  'notifications', 'user_interests', 'engagement', 'feed_seen', 'hashtags',
+  'post_hashtags', 'categories', 'model_meta', 'sessions',
+]; // note: token_counts, bigram_counts and phrases are absent
+
+function oldSchemaDb() {
+  const make = (sql) => {
+    const reject = () => {
+      const table = /FROM\s+(\w+)/i.exec(sql)?.[1] || /INTO\s+(\w+)/i.exec(sql)?.[1];
+      if (table && ['phrases', 'token_counts', 'bigram_counts'].includes(table)) {
+        throw new Error(`D1_ERROR: no such table: ${table}`);
+      }
+    };
+    return {
+      bind: () => ({
+        first: async () => { reject(); return null; },
+        all: async () => { reject(); return { results: [] }; },
+        run: async () => { reject(); return {}; },
+      }),
+      first: async () => { reject(); return null; },
+      all: async () => {
+        if (/sqlite_master/i.test(sql)) {
+          return { results: EXISTING_TABLES.map((name) => ({ name })) };
+        }
+        reject();
+        return { results: [] };
+      },
+      run: async () => { reject(); return {}; },
+    };
+  };
+  return { prepare: make, batch: async () => [] };
+}
+
+const { loadAnalyser } = await import('./src/storage.js');
+let degraded = null;
+try {
+  degraded = await loadAnalyser(oldSchemaDb());
+  check('loadAnalyser survives a missing phrases table', true);
+} catch (err) {
+  check('loadAnalyser survives a missing phrases table', false, err.message);
+}
+check('it falls back to an empty phrase set',
+  degraded !== null && degraded.phrases.size === 0);
+
+const oldHealth = await worker.fetch(
+  new Request('https://api.test/health'),
+  { ...env, DB: oldSchemaDb() }
+);
+const oldHealthBody = await oldHealth.json();
+check('health reports the schema as incomplete', oldHealthBody.schemaComplete === false);
+check('health names the missing tables',
+  (oldHealthBody.problems || []).some((p) => /phrases/.test(p) && /schema\.sql/.test(p)),
+  (oldHealthBody.problems || [])[0]);
+check('health flags itself as not ok', oldHealthBody.ok === false);
+
+// And a complete schema should report clean
+const goodHealth = await worker.fetch(
+  new Request('https://api.test/health'),
+  { ...env, DB: authStubDb() }
+);
+const goodBody = await goodHealth.json();
+check('a database returning all tables has no problems',
+  goodBody.problems === undefined || goodBody.problems.length === 0,
+  JSON.stringify(goodBody.problems));
 
 console.log(failures === 0 ? '\nAll checks passed.\n' : `\n${failures} check(s) FAILED.\n`);
 process.exit(failures === 0 ? 0 : 1);

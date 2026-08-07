@@ -34,6 +34,17 @@ import {
   handleAdminUserInterests, handleAdminPhrases,
 } from './routes/misc-routes.js';
 
+// Tables schema.sql creates. /health compares against this so a partially
+// migrated database reports itself instead of failing obscurely at runtime.
+const REQUIRED_TABLES = [
+  'users', 'posts', 'likes', 'comments',
+  'follow_requests', 'follows', 'notifications',
+  'user_interests', 'engagement', 'feed_seen',
+  'hashtags', 'post_hashtags',
+  'categories', 'model_meta', 'sessions',
+  'token_counts', 'bigram_counts', 'phrases',
+];
+
 // Route table. Order matters only where patterns could overlap; these do not.
 const ROUTES = [
   ['GET',  '/me',                        handleMe],
@@ -105,22 +116,49 @@ export default {
       );
     }
 
-    // Health check. Also reports how CORS sees the caller, because a blocked
-    // origin looks identical to an unreachable server from the browser's side.
+    // Health check. Reports how CORS sees the caller and whether the schema is
+    // complete, because both fail in ways the browser reports only as a generic
+    // error.
     if (url.pathname === '/health') {
       const origin = request.headers.get('Origin');
       const allowed = parseAllowedOrigins(env);
       const originAllowed = origin ? isOriginAllowed(origin, allowed) : null;
+
+      const problems = [];
+      if (originAllowed === false) problems.push(...diagnoseOrigin(origin, allowed));
+
+      // Which tables actually exist. A missing table breaks specific features
+      // while leaving others working, which is hard to diagnose from outside.
+      let tables = null;
+      let missing = [];
+      if (env.DB) {
+        try {
+          const rows = await env.DB
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .all();
+          tables = (rows.results || []).map((r) => r.name).sort();
+          missing = REQUIRED_TABLES.filter((t) => !tables.includes(t));
+          if (missing.length > 0) {
+            problems.push(
+              `Missing tables: ${missing.join(', ')}. Run: ` +
+              `npx wrangler d1 execute sixsevenger --file=./schema.sql --remote`
+            );
+          }
+        } catch (err) {
+          problems.push(`Could not read the schema: ${err.message}`);
+        }
+      }
+
       return json({
-        ok: true,
+        ok: problems.length === 0,
         time: Date.now(),
         database: env.DB ? 'bound' : 'MISSING',
+        schemaComplete: env.DB ? missing.length === 0 : null,
+        tables,
         yourOrigin: origin || '(none - opened directly)',
         originAllowed,
         allowedOrigins: allowed,
-        // Only present when something is actually wrong, so a healthy response
-        // stays short
-        problems: originAllowed === false ? diagnoseOrigin(origin, allowed) : undefined,
+        problems: problems.length > 0 ? problems : undefined,
       }, { request, env });
     }
 
