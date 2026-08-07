@@ -3,8 +3,20 @@
 // =========================================================
 
 async function loadMyInfo() {
-  const res = await api("/me");
-  const data = await res.json();
+  let data;
+  try {
+    const res = await api("/me");
+    data = await res.json();
+  } catch (err) {
+    // The API is unreachable. Treat as a guest so the page still renders
+    // rather than dying with an unhandled rejection.
+    console.error(apiErrorMessage(err));
+    data = { loggedIn: false, guest: true };
+  }
+
+  // A stored token the server no longer accepts is expired or was revoked.
+  // Drop it so the UI does not claim to be logged in.
+  if (!data.loggedIn && getSessionToken()) clearSessionToken();
 
   window.isGuest = data.guest;
   window.currentUserId = data.id;
@@ -227,8 +239,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (logoutBtn) {
     logoutBtn.onclick = async () => {
-      await api("/logout", { method: "POST" });
-      location.href = "/";
+      // Clear the stored token even if the request fails, so the user is not
+      // left appearing logged in locally
+      try {
+        await api("/logout", { method: "POST" });
+      } catch {
+        // ignore — clearing locally is what matters
+      }
+      clearSessionToken();
+      location.href = "/index.html";
     };
   }
 });

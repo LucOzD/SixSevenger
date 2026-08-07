@@ -146,7 +146,9 @@ export function corsHeaders(request, env) {
 
   const headers = {
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Accept',
+    // Authorization must be listed or the preflight rejects the session header,
+    // which is how auth travels when the site and API are on different sites
+    'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization',
     'Access-Control-Allow-Credentials': 'true',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',

@@ -55,16 +55,11 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
   button.disabled = true;
 
   try {
-    const res = await api('/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: document.getElementById('username').value.trim(),
-        password: document.getElementById('password').value,
-      }),
+    // apiAuth stores the returned session token for subsequent requests
+    const data = await apiAuth('/login', {
+      username: document.getElementById('username').value.trim(),
+      password: document.getElementById('password').value,
     });
-
-    const data = await res.json().catch(() => ({ error: 'Unexpected response from server' }));
 
     if (data.success) {
       location.href = '/index.html';

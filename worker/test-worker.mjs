@@ -108,6 +108,36 @@ check('same password gives a different hash (unique salt)', hash !== hash2);
 check('bcrypt hashes are rejected rather than crashing',
   !(await verifyPassword('anything', '$2a$10$abcdefghijklmnopqrstuv')));
 
+console.log('\n3b. Session token transport');
+const { readBearerToken, readSessionToken } = await import('./src/auth.js');
+const bearerReq = new Request('https://api.test/', {
+  headers: { Authorization: 'Bearer abc.123-xyz' },
+});
+check('bearer token parsed', readBearerToken(bearerReq) === 'abc.123-xyz');
+check('lowercase scheme accepted',
+  readBearerToken(new Request('https://api.test/', {
+    headers: { Authorization: 'bearer tok' },
+  })) === 'tok');
+check('no header gives null', readBearerToken(new Request('https://api.test/')) === null);
+check('a non-bearer scheme is ignored',
+  readBearerToken(new Request('https://api.test/', {
+    headers: { Authorization: 'Basic dXNlcjpwYXNz' },
+  })) === null);
+
+// The header must win, since it is the transport that survives third-party
+// cookie blocking
+const bothReq = new Request('https://api.test/', {
+  headers: { Authorization: 'Bearer from-header', Cookie: 'session=from-cookie' },
+});
+check('header takes precedence over cookie',
+  readSessionToken(bothReq) === 'from-header');
+check('cookie still works alone',
+  readSessionToken(new Request('https://api.test/', {
+    headers: { Cookie: 'session=only-cookie' },
+  })) === 'only-cookie');
+check('no session at all gives null',
+  readSessionToken(new Request('https://api.test/')) === null);
+
 console.log('\n4. Cookies');
 check('session cookie is HttpOnly', sessionCookie('tok', Date.now() + 1000, {}).includes('HttpOnly'));
 check('SameSite=None implies Secure',
@@ -163,6 +193,10 @@ const preflight = await worker.fetch(
 check('preflight returns 204', preflight.status === 204, `got ${preflight.status}`);
 check('preflight carries CORS headers',
   preflight.headers.get('Access-Control-Allow-Origin') === 'https://sixsevenger.pages.dev');
+// Without this the browser blocks the session header and auth silently fails
+check('preflight permits the Authorization header',
+  /Authorization/i.test(preflight.headers.get('Access-Control-Allow-Headers') || ''),
+  preflight.headers.get('Access-Control-Allow-Headers'));
 
 const missing = await worker.fetch(new Request('https://api.test/nope'), { ...env, DB: stubDb });
 check('unknown route returns 404', missing.status === 404, `got ${missing.status}`);
@@ -188,6 +222,59 @@ const post = await worker.fetch(
   { ...env, DB: stubDb }
 );
 check('posting while logged out is rejected', post.status === 401, `got ${post.status}`);
+
+console.log('\n7. A bearer token authenticates a request');
+// D1 stub that resolves exactly one session token to a user, so we can prove
+// the header path reaches the handlers — this is what was broken cross-site.
+const SESSION = 'valid-token-123';
+const USER = { id: 'u1', username: 'tester', avatar: null, bio: '', guest: 0 };
+function authStubDb() {
+  const make = (sql) => ({
+    bind: (...args) => ({
+      first: async () => {
+        if (/FROM sessions/i.test(sql)) {
+          return args[0] === SESSION ? { ...USER } : null;
+        }
+        if (/COUNT\(\*\)/i.test(sql)) return { c: 0 };
+        return null;
+      },
+      all: async () => ({ results: [] }),
+      run: async () => ({}),
+    }),
+    first: async () => null,
+    all: async () => ({ results: [] }),
+    run: async () => ({}),
+  });
+  return { prepare: make, batch: async () => [] };
+}
+
+const authed = await worker.fetch(
+  new Request('https://api.test/me', {
+    headers: { Authorization: `Bearer ${SESSION}` },
+  }),
+  { ...env, DB: authStubDb() }
+);
+const authedBody = await authed.json();
+check('bearer token logs the user in', authedBody.loggedIn === true,
+  JSON.stringify(authedBody).slice(0, 80));
+check('the right user is resolved', authedBody.username === 'tester');
+
+const badToken = await worker.fetch(
+  new Request('https://api.test/me', {
+    headers: { Authorization: 'Bearer not-a-real-token' },
+  }),
+  { ...env, DB: authStubDb() }
+);
+check('an unknown token is treated as logged out',
+  (await badToken.json()).loggedIn === false);
+
+// Same token via cookie, for the same-site deployment case
+const viaCookie = await worker.fetch(
+  new Request('https://api.test/me', { headers: { Cookie: `session=${SESSION}` } }),
+  { ...env, DB: authStubDb() }
+);
+check('cookie transport still authenticates',
+  (await viaCookie.json()).loggedIn === true);
 
 console.log(failures === 0 ? '\nAll checks passed.\n' : `\n${failures} check(s) FAILED.\n`);
 process.exit(failures === 0 ? 0 : 1);

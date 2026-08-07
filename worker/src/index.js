@@ -11,7 +11,7 @@ import {
   corsHeaders, json, notFound, matchPath,
   isOriginAllowed, parseAllowedOrigins, diagnoseOrigin,
 } from './http.js';
-import { getSessionUser, readCookie } from './auth.js';
+import { getSessionUser, readSessionToken } from './auth.js';
 
 import {
   handleSignup, handleLogin, handleLogout, handleMe, handleUpdateProfile,
@@ -125,7 +125,8 @@ export default {
     }
 
     const db = env.DB;
-    const sessionToken = readCookie(request, 'session');
+    // Header first, cookie as fallback — see readSessionToken for why
+    const sessionToken = readSessionToken(request);
 
     let user = null;
     try {

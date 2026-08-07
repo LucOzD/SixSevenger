@@ -67,18 +67,14 @@ document.getElementById('signupForm').addEventListener('submit', async (e) => {
   button.disabled = true;
 
   try {
-    const res = await api('/signup', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: document.getElementById('username').value,
-        password: document.getElementById('password').value,
-        bio: document.getElementById('bio').value,
-        avatar: getAvatar(),
-      }),
+    // apiAuth stores the returned session token for subsequent requests
+    const data = await apiAuth('/signup', {
+      username: document.getElementById('username').value,
+      password: document.getElementById('password').value,
+      bio: document.getElementById('bio').value,
+      avatar: getAvatar(),
     });
 
-    const data = await res.json();
     if (data.success) {
       location.href = '/index.html';
     } else {

@@ -66,7 +66,10 @@ export async function handleSignup(ctx) {
     .run();
 
   const { token, expires } = await createSession(db, id);
-  return json({ success: true, id, username }, {
+  // The token is returned in the body as well as the cookie, because a
+  // cross-site cookie is blocked by default in modern browsers. The client
+  // stores it and sends it as an Authorization header.
+  return json({ success: true, id, username, token, expires }, {
     request, env,
     extraHeaders: { 'Set-Cookie': sessionCookie(token, expires, env) },
   });
@@ -92,7 +95,7 @@ export async function handleLogin(ctx) {
   if (!ok) return invalid();
 
   const { token, expires } = await createSession(db, user.id);
-  return json({ success: true, id: user.id, username: user.username }, {
+  return json({ success: true, id: user.id, username: user.username, token, expires }, {
     request, env,
     extraHeaders: { 'Set-Cookie': sessionCookie(token, expires, env) },
   });

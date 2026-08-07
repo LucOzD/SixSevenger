@@ -126,6 +126,35 @@ export function readCookie(request, name) {
 }
 
 /**
+ * Read the session token from an Authorization header.
+ *
+ * This is the primary mechanism when the site and API are on different sites.
+ * A cookie set by the Worker's domain is a THIRD-PARTY cookie to the frontend,
+ * and browsers now block those by default — Safari and Firefox outright, Chrome
+ * progressively — no matter what SameSite says. The symptom is signing up
+ * successfully and then being logged out on the very next request.
+ *
+ * A header is unaffected by cookie policy, so it works on any domain pairing.
+ */
+export function readBearerToken(request) {
+  const header = request.headers.get('Authorization');
+  if (!header) return null;
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  return match ? match[1].trim() : null;
+}
+
+/**
+ * Resolve the session token from either transport.
+ *
+ * The header wins when both are present. The cookie is still honoured because
+ * it is HttpOnly and therefore safe from XSS, so it remains preferable when the
+ * API is same-site with the frontend (for example on api.yourdomain.com).
+ */
+export function readSessionToken(request) {
+  return readBearerToken(request) || readCookie(request, 'session');
+}
+
+/**
  * Build the session cookie.
  *
  * SameSite=None is required because the frontend (Pages) and the API (Worker)

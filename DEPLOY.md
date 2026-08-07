@@ -260,7 +260,27 @@ every request would move hundreds of KB per call.
 **Sessions replaced the userId cookie.** The old cookie held your user id in
 plain text with `httpOnly: false`, so anyone could impersonate any user by
 editing it in devtools. Sessions are now random opaque tokens in a `sessions`
-table, in an `HttpOnly` cookie.
+table.
+
+**Auth travels in a header, not a cookie.** This one is worth understanding,
+because the symptom is confusing: you can sign up successfully and then be
+logged out on the very next request.
+
+A cookie set by the Worker's domain is a **third-party cookie** to a frontend on
+a different domain, and browsers block those by default now — Safari and Firefox
+outright, Chrome progressively — no matter what `SameSite=None; Secure` says. So
+the session token is returned in the login and signup response body, stored in
+`localStorage`, and sent as `Authorization: Bearer <token>`. A header is
+unaffected by cookie policy and works on any domain pairing.
+
+The Worker accepts **either** transport, header first. The `HttpOnly` cookie is
+still set and still honoured, which matters because it is safe from XSS whereas
+`localStorage` is not. If you put the Worker on a subdomain of your own site
+(`api.yourdomain.com`) the cookie becomes first-party and is used automatically —
+that is the more secure setup, and nothing in the code needs changing for it.
+
+Because `localStorage` is readable by script, every render path escapes user
+content. That was already true, but it matters more now.
 
 **Passwords use PBKDF2 instead of bcrypt.** bcryptjs is pure JavaScript and
 slow enough to risk the Worker CPU limit; PBKDF2 runs on native WebCrypto.
@@ -302,10 +322,26 @@ refuses to tell the page why, so it surfaces as a network error.
 The most common cause with custom domains is `http://` where it should be
 `https://`.
 
-**Everything returns 401, or you cannot stay logged in.**
-The request is getting through but the session cookie is not sticking. Check
-`SESSION_SAMESITE` is `"None"` in production (it needs HTTPS), or `"Lax"` for
-local HTTP.
+**Signup works but then you are logged out, and cannot post.**
+The session is not reaching the API. Requests carry it as
+`Authorization: Bearer <token>` from `localStorage`, so check in the browser
+console:
+
+```js
+localStorage.getItem('sixsevenger_session')
+```
+
+If that is `null`, the login response did not include a token — make sure the
+Worker is redeployed, since returning the token in the body was added alongside
+this. If it has a value but requests still 401, the token may be expired; log out
+and back in.
+
+This used to fail because auth relied on a cookie, which is a third-party cookie
+when the API is on a different domain and therefore blocked by default.
+
+**Everything returns 401 immediately after deploying.**
+Check `SESSION_SAMESITE` is `"None"` in production (it needs HTTPS), or `"Lax"`
+for local HTTP. This only affects the cookie fallback, not the header.
 
 **`D1 binding "DB" is missing`.**
 `database_id` in `wrangler.toml` is still the placeholder, or you deployed
