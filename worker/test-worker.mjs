@@ -20,7 +20,8 @@ const enc = matchPath('/api/hashtag/:tag', '/api/hashtag/six%20seven');
 check('params url-decoded', enc && enc.params.tag === 'six seven', JSON.stringify(enc?.params));
 
 console.log('\n2a. Origin allow-listing');
-const { isOriginAllowed, parseAllowedOrigins } = await import('./src/http.js');
+const { isOriginAllowed, parseAllowedOrigins, diagnoseOrigin, unsafeWildcardReason } =
+  await import('./src/http.js');
 const projectList = ['https://sixsevenger.pages.dev', 'https://*.sixsevenger.pages.dev'];
 check('exact production origin allowed',
   isOriginAllowed('https://sixsevenger.pages.dev', projectList));
@@ -33,14 +34,52 @@ check('lookalike domain rejected',
 check('http against an https entry rejected',
   !isOriginAllowed('http://sixsevenger.pages.dev', projectList));
 check('empty origin rejected', !isOriginAllowed('', projectList));
-// A wildcard broad enough to cover unrelated sites must not be honoured
-check('bare *.pages.dev wildcard refused',
-  !isOriginAllowed('https://anything.pages.dev', ['https://*.pages.dev']));
 check('trailing slashes in config tolerated',
   parseAllowedOrigins({ ALLOWED_ORIGINS: 'https://a.example/, https://b.example' })
     .join(',') === 'https://a.example,https://b.example');
 
-console.log('\n2b. CORS headers');
+console.log('\n2b. Custom domain wildcards');
+const customList = ['https://*.lucasdrane.com', 'https://lucasdrane.com'];
+check('own-domain wildcard allows a subdomain',
+  isOriginAllowed('https://sixseven.lucasdrane.com', customList));
+check('own-domain wildcard allows another subdomain',
+  isOriginAllowed('https://67.lucasdrane.com', customList));
+check('apex domain allowed via its own entry',
+  isOriginAllowed('https://lucasdrane.com', customList));
+check('wildcard alone does not cover the apex',
+  !isOriginAllowed('https://lucasdrane.com', ['https://*.lucasdrane.com']));
+check('a different domain is rejected',
+  !isOriginAllowed('https://evil.com', customList));
+check('suffix-confusion attack rejected',
+  !isOriginAllowed('https://evil-lucasdrane.com', customList));
+
+console.log('\n2c. Unsafe wildcards refused');
+check('shared hosting wildcard refused', unsafeWildcardReason('.pages.dev') !== null);
+check('workers.dev wildcard refused', unsafeWildcardReason('.workers.dev') !== null);
+check('bare TLD wildcard refused', unsafeWildcardReason('.com') !== null);
+check('own domain wildcard permitted', unsafeWildcardReason('.lucasdrane.com') === null);
+check('project subdomain of shared host permitted',
+  unsafeWildcardReason('.myproject.pages.dev') === null);
+check('bare *.pages.dev does not match anything',
+  !isOriginAllowed('https://anything.pages.dev', ['https://*.pages.dev']));
+
+console.log('\n2d. Rejection is explained');
+// The mistake that actually happened: custom domains entered as http:// when
+// Cloudflare serves them over https://
+const schemeHints = diagnoseOrigin('https://67.lucasdrane.com', ['http://67.lucasdrane.com']);
+check('scheme mismatch is identified',
+  schemeHints.some((h) => /Scheme mismatch/.test(h)), schemeHints[0]);
+const unsafeHints = diagnoseOrigin('https://x.pages.dev', ['https://*.pages.dev']);
+check('unsafe wildcard is called out',
+  unsafeHints.some((h) => /shared hosting/.test(h)), unsafeHints[0]);
+const apexHints = diagnoseOrigin('https://lucasdrane.com', ['https://*.lucasdrane.com']);
+check('apex-vs-wildcard confusion is called out',
+  apexHints.some((h) => /only covers subdomains/.test(h)), apexHints[0]);
+check('a plain missing origin gets actionable advice',
+  diagnoseOrigin('https://new.example', []).some((h) => /Add .* redeploy/.test(h)));
+
+console.log('\n2e. CORS headers');
+
 const env = { ALLOWED_ORIGINS: 'https://sixsevenger.pages.dev,http://localhost:8788' };
 const allowedReq = new Request('https://api.test/me', {
   headers: { Origin: 'https://sixsevenger.pages.dev' },

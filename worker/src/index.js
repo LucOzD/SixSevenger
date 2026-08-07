@@ -9,7 +9,7 @@
 
 import {
   corsHeaders, json, notFound, matchPath,
-  isOriginAllowed, parseAllowedOrigins,
+  isOriginAllowed, parseAllowedOrigins, diagnoseOrigin,
 } from './http.js';
 import { getSessionUser, readCookie } from './auth.js';
 
@@ -80,12 +80,17 @@ export default {
     // page, so without this the only symptom is a generic network error.
     // Visible via: npx wrangler tail
     const origin = request.headers.get('Origin');
-    if (origin && !isOriginAllowed(origin, parseAllowedOrigins(env))) {
-      console.warn(
-        `CORS: rejected origin ${origin}. ` +
-        `Add it to ALLOWED_ORIGINS in wrangler.toml and redeploy. ` +
-        `Currently allowed: ${JSON.stringify(parseAllowedOrigins(env))}`
-      );
+    if (origin) {
+      const allowedList = parseAllowedOrigins(env);
+      if (!isOriginAllowed(origin, allowedList)) {
+        console.warn(
+          `CORS: rejected origin ${origin}. ` +
+          `Currently allowed: ${JSON.stringify(allowedList)}`
+        );
+        for (const hint of diagnoseOrigin(origin, allowedList)) {
+          console.warn(`CORS hint: ${hint}`);
+        }
+      }
     }
 
     // CORS preflight
@@ -105,13 +110,17 @@ export default {
     if (url.pathname === '/health') {
       const origin = request.headers.get('Origin');
       const allowed = parseAllowedOrigins(env);
+      const originAllowed = origin ? isOriginAllowed(origin, allowed) : null;
       return json({
         ok: true,
         time: Date.now(),
         database: env.DB ? 'bound' : 'MISSING',
         yourOrigin: origin || '(none - opened directly)',
-        originAllowed: origin ? isOriginAllowed(origin, allowed) : null,
+        originAllowed,
         allowedOrigins: allowed,
+        // Only present when something is actually wrong, so a healthy response
+        // stays short
+        problems: originAllowed === false ? diagnoseOrigin(origin, allowed) : undefined,
       }, { request, env });
     }
 

@@ -140,6 +140,35 @@ It is scoped to your project's subdomains deliberately. Do not widen it to
 using a logged-in visitor's cookie. The Worker refuses a wildcard that broad
 anyway.
 
+### Custom domains
+
+If you attach custom domains to the Pages project, add them too. **Use
+`https://`** — Cloudflare serves custom domains over HTTPS, so an `http://`
+entry will never match what the browser sends, and the request is rejected with
+no explanation in the page. Only `localhost` should be `http`.
+
+A wildcard saves listing each subdomain:
+
+```toml
+ALLOWED_ORIGINS = "https://*.yourdomain.com,https://yourdomain.com,..."
+```
+
+Note `https://*.yourdomain.com` covers `www.` and `app.` but **not**
+`yourdomain.com` itself — a wildcard requires a subdomain, so list the apex
+separately if you use it.
+
+Wildcards directly over shared hosting (`https://*.pages.dev`,
+`https://*.workers.dev`) are ignored by the Worker, since they would trust every
+other site on that platform. A wildcard under your own subdomain of one, like
+`https://*.myproject.pages.dev`, is fine.
+
+Worth considering: the API currently runs on `workers.dev` while the site is on
+your domain, so cookies are cross-site and depend on `SameSite=None`. Putting
+the Worker on a custom domain of its own (`api.yourdomain.com`) would make
+requests same-site, which is more robust and lets you use `SameSite=Lax`. Set it
+under Workers → your worker → Settings → Domains & Routes, then update
+`PRODUCTION_API` in `pages/config.js`.
+
 To check what the API thinks, open this in a browser:
 
 ```
@@ -260,11 +289,18 @@ refuses to tell the page why, so it surfaces as a network error.
 
 1. Open `<your-worker-url>/health` in a browser. If that fails, the Worker
    itself is not deployed.
-2. If it works, check `allowedOrigins` in the response includes your Pages URL.
+2. From the failing site's console, run:
+   ```js
+   fetch(API_BASE + '/health', { credentials: 'include' }).then(r => r.json()).then(console.log)
+   ```
+   If `originAllowed` is `false`, a `problems` array explains exactly why —
+   scheme mismatch, an ignored wildcard, or a missing entry.
 3. Fix `ALLOWED_ORIGINS` in `worker/wrangler.toml`, then **redeploy the Worker** —
    editing the file alone changes nothing.
-4. Run `npx wrangler tail` and retry. A rejected origin logs the exact value it
-   saw and what it expected.
+4. `npx wrangler tail` logs the same hints server-side on every rejection.
+
+The most common cause with custom domains is `http://` where it should be
+`https://`.
 
 **Everything returns 401, or you cannot stay logged in.**
 The request is getting through but the session cookie is not sticking. Check

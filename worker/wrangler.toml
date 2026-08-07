@@ -12,17 +12,20 @@ database_name = "sixsevenger"
 database_id = "b8985d4f-abb0-48d7-81d2-0f059e216cb6"
 
 [vars]
-# Origins allowed to call this API with credentials. A wildcard is not possible
-# here: browsers reject "*" when a request carries cookies, so each frontend
-# origin must be listed explicitly. Add your Pages URL once you know it.
-# The `*.` wildcard covers Pages preview deployments, which each get their own
-# subdomain. It is scoped to this one project on purpose — a bare
-# "https://*.pages.dev" would let any site hosted on Pages call this API with a
-# logged-in visitor's cookie.
+# Origins allowed to call this API with credentials. Browsers reject "*" when a
+# request carries cookies, so origins must be named.
 #
-# If your Pages project is not called "sixsevenger", change both entries below
-# to match the URL that `wrangler pages deploy` printed.
-ALLOWED_ORIGINS = "https://sixsevenger.pages.dev,https://*.sixsevenger.pages.dev,http://localhost:8788,http://127.0.0.1:8788,http://67.lucasdrane.com,http://sixseven.lucasdrane.com,http://sixsevenger.lucasdrane.com"
+# The scheme MUST match what the browser sends. Cloudflare serves custom domains
+# over HTTPS, so custom domains belong here as https:// — an http:// entry will
+# never match and the request is rejected with no explanation in the browser.
+# Only localhost should be http.
+#
+# A leading "*." wildcard is allowed in the hostname, which is how Pages preview
+# deployments are covered (each gets its own subdomain). Wildcards over shared
+# hosting domains like "https://*.pages.dev" are refused by the Worker, because
+# that would let anyone else's site on that host call this API using a logged-in
+# visitor's cookie.
+ALLOWED_ORIGINS = "https://sixsevenger.pages.dev,https://*.sixsevenger.pages.dev,https://*.lucasdrane.com,https://lucasdrane.com,http://localhost:8788,http://127.0.0.1:8788"
 
 
 # Session cookies use SameSite=None so they work across the Pages and Worker
