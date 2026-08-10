@@ -453,25 +453,47 @@ function createPostCard(post) {
     const text = commentInput.value.trim();
     if (!text) return;
 
-    const res = await api(`/post/${post.id}/comment`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
-    });
+    commentSend.disabled = true;
+    try {
+      const res = await api(`/post/${post.id}/comment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
 
-    const newComment = await res.json();
+      let payload = null;
+      try {
+        payload = await res.json();
+      } catch {
+        // A proxy or stale deployment may return a non-JSON error page.
+      }
 
-    const el = document.createElement('div');
-    el.className = 'comment';
-    el.innerHTML = `
-      ${avatarHtml(newComment.avatar, newComment.username)}
-      <strong>${newComment.username}</strong>
-      <div>${escapeHtml(newComment.text)}</div>
-    `;
-    commentsList.appendChild(el);
+      if (!res.ok) {
+        throw new Error(payload?.error || 'Failed to add comment.');
+      }
 
-    commentInput.value = '';
-    commentCountEl.textContent = parseInt(commentCountEl.textContent) + 1;
+      const newComment = payload?.comment;
+      if (!payload?.success || !newComment ||
+          typeof newComment.text !== 'string' || typeof newComment.username !== 'string') {
+        throw new Error('The server returned an invalid comment. Please refresh and try again.');
+      }
+
+      const el = document.createElement('div');
+      el.className = 'comment';
+      el.innerHTML = `
+        ${avatarHtml(newComment.avatar, newComment.username)}
+        <strong>${newComment.username || 'Unknown'}</strong>
+        <div>${escapeHtml(newComment.text)}</div>
+      `;
+      commentsList.appendChild(el);
+
+      commentInput.value = '';
+      commentCountEl.textContent = String((parseInt(commentCountEl.textContent, 10) || 0) + 1);
+    } catch (error) {
+      alert(error.message || 'Failed to add comment.');
+    } finally {
+      commentSend.disabled = false;
+    }
   });
 
   return card;

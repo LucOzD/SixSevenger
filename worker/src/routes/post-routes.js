@@ -361,10 +361,13 @@ export async function handleAddComment(ctx, params) {
   await db.batch(statements);
 
   return json({
-    id, text, timestamp,
-    userId: user.id,
-    username: user.username,
-    avatar: user.avatar,
+    success: true,
+    comment: {
+      id, text, timestamp,
+      userId: user.id,
+      username: user.username,
+      avatar: user.avatar,
+    },
   }, { request, env });
 }
 
@@ -507,10 +510,15 @@ export async function handleGlobalFeed(ctx) {
   // Skip anything served in the last 5 minutes, so scrolling brings new posts
   // without starving the feed on a later visit
   const seenRows = await db
-    .prepare('SELECT postId FROM feed_seen WHERE userId = ? AND seenAt > ?')
+    .prepare(
+      `SELECT postId FROM feed_seen
+        WHERE userId = ? AND seenAt > ?
+        ORDER BY seenAt DESC LIMIT 200`
+    )
     .bind(user.id, now - 5 * 60 * 1000)
     .all();
   const seenIds = (seenRows.results || []).map((r) => r.postId);
+  const seenSet = new Set(seenIds);
   const seenClause = seenIds.length
     ? `AND p.id NOT IN (${seenIds.map(() => '?').join(',')})`
     : '';
@@ -557,24 +565,30 @@ export async function handleGlobalFeed(ctx) {
     candidates = rows.results || [];
   }
 
-  // Never return an empty feed: fall back to anything recent
-  if (candidates.length < limit) {
-    const have = new Set(candidates.map((p) => p.id));
-    const rows = await db
-      .prepare(
-        `SELECT p.*, u.username, u.avatar
-           FROM posts p JOIN users u ON p.userId = u.id
-          WHERE p.userId != ? AND p.deleted = 0 AND p.spam_score < 0.9 ${seenClause}
-          ORDER BY p.timestamp DESC LIMIT 200`
-      )
-      .bind(user.id, ...seenIds)
-      .all();
-    for (const p of rows.results || []) {
-      if (!have.has(p.id)) {
-        candidates.push(p);
-        have.add(p.id);
-      }
-    }
+  // Build a completion pool from every eligible account. Unseen posts from
+  // less-relevant accounts are fallback material; posts served in the last
+  // five minutes remain available only as strongly penalised repeat backfill.
+  // This keeps refresh and infinite scroll full without letting repeats outrank
+  // fresh candidates.
+  const poolRows = await db
+    .prepare(
+      `SELECT p.*, u.username, u.avatar
+         FROM posts p JOIN users u ON p.userId = u.id
+        WHERE p.userId != ? AND p.deleted = 0 AND p.spam_score < 0.9
+        ORDER BY p.timestamp DESC LIMIT 200`
+    )
+    .bind(user.id)
+    .all();
+  const candidateIds = new Set(candidates.map((p) => p.id));
+  for (const p of poolRows.results || []) {
+    if (candidates.length >= 200) break;
+    if (candidateIds.has(p.id)) continue;
+    candidates.push({
+      ...p,
+      _fallback: true,
+      _recentlySeen: seenSet.has(p.id),
+    });
+    candidateIds.add(p.id);
   }
 
   // Average engagement per post, as a mild popularity nudge
@@ -611,10 +625,20 @@ export async function handleGlobalFeed(ctx) {
     else recency = 0.01;
 
     const relevance = Math.max(0.01, catScore) * spamFactor + (engagementMap[p.id] || 0);
-    return { ...p, _score: relevance * 0.8 + recency * 0.2 };
+    const baseScore = relevance * 0.8 + recency * 0.2;
+    const fallbackFactor = p._fallback ? 0.85 : 1;
+    const repeatFactor = p._recentlySeen ? 0.08 : 1;
+    return { ...p, _score: baseScore * fallbackFactor * repeatFactor };
   });
 
-  scored.sort((a, b) => b._score - a._score);
+  // Fresh posts always precede recently served backfill. The repeat score is
+  // still retained to rank repeats sensibly against each other.
+  scored.sort((a, b) => {
+    if (Boolean(a._recentlySeen) !== Boolean(b._recentlySeen)) {
+      return a._recentlySeen ? 1 : -1;
+    }
+    return b._score - a._score;
+  });
 
   // Roughly 10% of slots explore categories adjacent to the user's interests
   const exploreSlots = Math.max(1, Math.floor(limit * 0.1));
@@ -692,12 +716,41 @@ export async function handleGlobalFeed(ctx) {
     finalPosts.push(chosen[i]);
     if ((i + 1) % 8 === 0 && ei < explore.length) finalPosts.push(explore[ei++]);
   }
-  while (ei < explore.length) finalPosts.push(explore[ei++]);
+  while (ei < explore.length && finalPosts.length < limit) {
+    finalPosts.push(explore[ei++]);
+  }
+
+  // Exploration can be unavailable, and strict author diversity can leave
+  // holes. Fill those holes from the ranked pool in increasingly relaxed
+  // passes, while never duplicating a post within one response.
+  const finalIds = new Set(finalPosts.map((p) => p.id));
+  const finalPerUser = {};
+  for (const p of finalPosts) {
+    finalPerUser[p.userId] = (finalPerUser[p.userId] || 0) + 1;
+  }
+
+  const topUp = (maxPerUser, avoidAdjacent) => {
+    for (const p of scored) {
+      if (finalPosts.length >= limit) break;
+      if (finalIds.has(p.id)) continue;
+      if ((finalPerUser[p.userId] || 0) >= maxPerUser) continue;
+      if (avoidAdjacent && finalPosts.at(-1)?.userId === p.userId) continue;
+      finalPosts.push(p);
+      finalIds.add(p.id);
+      finalPerUser[p.userId] = (finalPerUser[p.userId] || 0) + 1;
+    }
+  };
+
+  topUp(3, true);
+  topUp(3, false);
+  topUp(Number.POSITIVE_INFINITY, false);
+
+  const servedPosts = finalPosts.slice(0, limit);
 
   // Remember what was served
-  if (finalPosts.length > 0) {
+  if (servedPosts.length > 0) {
     await db.batch(
-      finalPosts.map((p) =>
+      servedPosts.map((p) =>
         db
           .prepare(
             `INSERT INTO feed_seen (userId, postId, seenAt) VALUES (?, ?, ?)
@@ -708,7 +761,7 @@ export async function handleGlobalFeed(ctx) {
     );
   }
 
-  return json(await enrichPosts(db, finalPosts, user.id), { request, env });
+  return json(await enrichPosts(db, servedPosts, user.id), { request, env });
 }
 
 /** Attach like/dislike counts and the caller's own vote. */
@@ -743,7 +796,7 @@ async function enrichPosts(db, posts, userId) {
   }
 
   return posts.map((p) => {
-    const { _score, ...rest } = p;
+    const { _score, _fallback, _recentlySeen, _explore, ...rest } = p;
     return {
       ...rest,
       likes: counts[p.id]?.likes || 0,

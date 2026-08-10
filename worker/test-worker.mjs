@@ -364,5 +364,118 @@ check('a database returning all tables has no problems',
   goodBody.problems === undefined || goodBody.problems.length === 0,
   JSON.stringify(goodBody.problems));
 
+console.log('\n9. Feed refresh and comment response regressions');
+const { handleGlobalFeed, handleAddComment } = await import('./src/routes/post-routes.js');
+
+function feedRegressionDb(posts) {
+  const recentlySeen = new Set();
+
+  const executeAll = async (sql) => {
+    if (/SELECT postId FROM feed_seen/i.test(sql)) {
+      return { results: [...recentlySeen].map((postId) => ({ postId })) };
+    }
+    if (/SELECT p\.\*, u\.username, u\.avatar/i.test(sql)) {
+      const results = /NOT IN/i.test(sql)
+        ? posts.filter((post) => !recentlySeen.has(post.id))
+        : posts;
+      return { results };
+    }
+    return { results: [] };
+  };
+
+  const prepare = (sql) => ({
+    bind: (...args) => ({
+      sql,
+      args,
+      all: () => executeAll(sql),
+      first: async () => null,
+      run: async () => ({}),
+    }),
+    all: () => executeAll(sql),
+    first: async () => null,
+    run: async () => ({}),
+  });
+
+  return {
+    prepare,
+    batch: async (statements) => {
+      for (const statement of statements) {
+        if (/INSERT INTO feed_seen/i.test(statement.sql || '')) {
+          recentlySeen.add(statement.args[1]);
+        }
+      }
+      return statements.map(() => ({}));
+    },
+    recentlySeen,
+  };
+}
+
+const feedPosts = Array.from({ length: 22 }, (_, index) => ({
+  id: `post-${index}`,
+  userId: `author-${index % 11}`,
+  username: `author${index % 11}`,
+  avatar: '🙂',
+  text: `Post ${index}`,
+  timestamp: Date.now() - index * 1000,
+  deleted: 0,
+  category_id: 0,
+  spam_score: 0,
+  sentiment: 0,
+}));
+const feedDb = feedRegressionDb(feedPosts);
+const feedContext = {
+  request: new Request('https://api.test/global-feed?limit=20'),
+  env,
+  db: feedDb,
+  user: USER,
+};
+const firstFeed = await (await handleGlobalFeed(feedContext)).json();
+const firstSeenCount = feedDb.recentlySeen.size;
+const refreshedFeed = await (await handleGlobalFeed(feedContext)).json();
+check('first feed load fills the requested page', firstFeed.length === 20,
+  `got ${firstFeed.length}`);
+check('first feed load records served posts', firstSeenCount === 20,
+  `recorded ${firstSeenCount}`);
+check('immediate refresh backfills to a full page', refreshedFeed.length === 20,
+  `got ${refreshedFeed.length}`);
+check('refresh response contains no duplicate IDs',
+  new Set(refreshedFeed.map((postItem) => postItem.id)).size === refreshedFeed.length);
+
+const commentDb = {
+  prepare(sql) {
+    return {
+      bind: () => ({
+        first: async () => /SELECT userId, category_id FROM posts/i.test(sql)
+          ? { userId: 'author-1', category_id: -1 }
+          : null,
+        all: async () => ({ results: [] }),
+        run: async () => ({}),
+      }),
+    };
+  },
+  batch: async () => [],
+};
+const commentResponse = await handleAddComment({
+  request: new Request('https://api.test/post/post-1/comment', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'A real comment' }),
+  }),
+  env,
+  db: commentDb,
+  user: USER,
+}, { id: 'post-1' });
+const commentBody = await commentResponse.json();
+const createdComment = commentBody.comment;
+check('comment creation uses the canonical response envelope',
+  commentBody.success === true && createdComment !== undefined,
+  JSON.stringify(commentBody));
+check('created comment includes every renderer field',
+  createdComment && ['id', 'text', 'timestamp', 'userId', 'username', 'avatar']
+    .every((field) => createdComment[field] !== undefined),
+  JSON.stringify(createdComment));
+check('created comment text and username are defined',
+  createdComment?.text === 'A real comment' && createdComment?.username === USER.username);
+
 console.log(failures === 0 ? '\nAll checks passed.\n' : `\n${failures} check(s) FAILED.\n`);
 process.exit(failures === 0 ? 0 : 1);
