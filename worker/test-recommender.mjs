@@ -1,7 +1,10 @@
 // Verify the ported recommender: every post gets a category, topics group
 // together, opposite-sentiment categories get demoted, and state survives the
 // JSON round-trip that D1 persistence relies on.
-import { PostAnalyser, UserProfiler, POST_INTEREST_WEIGHT, SIGNAL_WEIGHTS } from './src/recommender.js';
+import {
+  PostAnalyser, UserProfiler, POST_INTEREST_WEIGHT, SIGNAL_WEIGHTS,
+  FEED_SCORE_WEIGHTS, postInteractionScore, feedCandidateScore,
+} from './src/recommender.js';
 
 let failures = 0;
 function check(label, condition, detail = '') {
@@ -216,10 +219,26 @@ check('phrase set is carried on the analyser', withPhrases.phrases.has('geometry
 check('tokens are returned for phrase counting',
   Array.isArray(withPhrases.addPost('geometry dash rocks').tokens));
 
-console.log('\n10. Signal weights match the Express server');
-check('like weight', SIGNAL_WEIGHTS.like === 0.20);
+console.log('\n10. Explicit actions outweigh passive recency');
+check('like weight is a strong profile signal', SIGNAL_WEIGHTS.like === 0.60);
+check('comment weight exceeds like weight', SIGNAL_WEIGHTS.comment > SIGNAL_WEIGHTS.like);
 check('dislike weight is stronger than like', Math.abs(SIGNAL_WEIGHTS.dislike) > SIGNAL_WEIGHTS.like);
-check('authoring weight', POST_INTEREST_WEIGHT === 0.15);
+check('authoring weight stays weaker than reactions', POST_INTEREST_WEIGHT < SIGNAL_WEIGHTS.like);
+check('recency has the smallest feed coefficient',
+  FEED_SCORE_WEIGHTS.recency < FEED_SCORE_WEIGHTS.interactions &&
+  FEED_SCORE_WEIGHTS.recency < FEED_SCORE_WEIGHTS.relevance);
+check('comments count more than likes on a post',
+  postInteractionScore({ comments: 1 }) > postInteractionScore({ likes: 1 }));
+check('dislikes lower a post interaction score',
+  postInteractionScore({ likes: 2, dislikes: 2 }) < postInteractionScore({ likes: 2 }));
+
+const freshNoReactions = feedCandidateScore(0.01, 0.15, {});
+const oldWithLike = feedCandidateScore(0.01, 0.01, { likes: 1 });
+const oldWithComment = feedCandidateScore(0.01, 0.01, { comments: 1 });
+check('one like outweighs the maximum recency advantage', oldWithLike > freshNoReactions,
+  `liked=${oldWithLike.toFixed(4)} fresh=${freshNoReactions.toFixed(4)}`);
+check('one comment outweighs the maximum recency advantage', oldWithComment > freshNoReactions,
+  `commented=${oldWithComment.toFixed(4)} fresh=${freshNoReactions.toFixed(4)}`);
 
 console.log('\n--- category summary ---');
 const overview = analyser.categoriesOverview();

@@ -375,12 +375,22 @@ function feedRegressionDb(posts) {
       return { results: [...recentlySeen].map((postId) => ({ postId })) };
     }
     if (/SELECT p\.\*, u\.username, u\.avatar/i.test(sql)) {
-      const results = /NOT IN/i.test(sql)
-        ? posts.filter((post) => !recentlySeen.has(post.id))
-        : posts;
+      let results = posts.filter((post) => post.userId !== USER.id);
+      if (/NOT IN/i.test(sql)) {
+        results = results.filter((post) => !recentlySeen.has(post.id));
+      }
       return { results };
     }
     return { results: [] };
+  };
+
+  const executeFirst = async (sql) => {
+    if (/WHERE p\.userId = \?.*p\.timestamp > \?/is.test(sql)) {
+      return posts
+        .filter((post) => post.userId === USER.id && post.deleted === 0)
+        .sort((a, b) => b.timestamp - a.timestamp)[0] || null;
+    }
+    return null;
   };
 
   const prepare = (sql) => ({
@@ -388,11 +398,11 @@ function feedRegressionDb(posts) {
       sql,
       args,
       all: () => executeAll(sql),
-      first: async () => null,
+      first: () => executeFirst(sql),
       run: async () => ({}),
     }),
     all: () => executeAll(sql),
-    first: async () => null,
+    first: () => executeFirst(sql),
     run: async () => ({}),
   });
 
@@ -410,18 +420,30 @@ function feedRegressionDb(posts) {
   };
 }
 
-const feedPosts = Array.from({ length: 22 }, (_, index) => ({
+const ownRecentPost = {
+  id: 'own-new-post',
+  userId: USER.id,
+  username: USER.username,
+  avatar: USER.avatar,
+  text: 'My new post',
+  timestamp: Date.now(),
+  deleted: 0,
+  category_id: 0,
+  spam_score: 0,
+  sentiment: 0,
+};
+const feedPosts = [ownRecentPost, ...Array.from({ length: 22 }, (_, index) => ({
   id: `post-${index}`,
   userId: `author-${index % 11}`,
   username: `author${index % 11}`,
   avatar: '🙂',
   text: `Post ${index}`,
-  timestamp: Date.now() - index * 1000,
+  timestamp: Date.now() - (index + 1) * 1000,
   deleted: 0,
   category_id: 0,
   spam_score: 0,
   sentiment: 0,
-}));
+}))];
 const feedDb = feedRegressionDb(feedPosts);
 const feedContext = {
   request: new Request('https://api.test/global-feed?limit=20'),
@@ -434,6 +456,9 @@ const firstSeenCount = feedDb.recentlySeen.size;
 const refreshedFeed = await (await handleGlobalFeed(feedContext)).json();
 check('first feed load fills the requested page', firstFeed.length === 20,
   `got ${firstFeed.length}`);
+check('latest unseen authored post is pinned first', firstFeed[0]?.id === ownRecentPost.id,
+  `first=${firstFeed[0]?.id}`);
+check('internal own-post marker is not exposed', firstFeed[0]?._ownRecent === undefined);
 check('first feed load records served posts', firstSeenCount === 20,
   `recorded ${firstSeenCount}`);
 check('immediate refresh backfills to a full page', refreshedFeed.length === 20,

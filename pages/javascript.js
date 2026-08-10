@@ -202,8 +202,9 @@ function navigateNotification(item) {
 
   if (item.type === 'comment' || item.type === 'like') {
     if (payload.postId) {
-      const target = `/post.html?id=${payload.postId}` + (payload.commentId ? `?highlightCommentId=${payload.commentId}` : '');
-      window.location.href = target;
+      const query = new URLSearchParams({ id: String(payload.postId) });
+      if (payload.commentId) query.set('highlightCommentId', String(payload.commentId));
+      window.location.href = `/post.html?${query.toString()}`;
       return;
     }
   }
@@ -261,18 +262,41 @@ const inputBox = document.getElementById("inputBox");
 
 if (inputBox) {
   inputBox.addEventListener("keydown", async (e) => {
-    if (e.key === "Enter" && inputBox.value.trim() !== "") {
-      const message = inputBox.value.trim();
-      inputBox.value = "";
+    if (e.key !== "Enter" || inputBox.value.trim() === "" || inputBox.dataset.sending === 'true') {
+      return;
+    }
 
-      await api("/save-message", {
+    e.preventDefault();
+    const message = inputBox.value.trim();
+    inputBox.dataset.sending = 'true';
+
+    try {
+      const res = await api("/save-message", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message })
       });
+      const payload = await res.json();
+      if (!res.ok || !payload.success || !payload.post) {
+        throw new Error(payload.error || 'Failed to create post.');
+      }
 
-      // Reload your posts
+      inputBox.value = "";
+
+      const feed = document.getElementById('globalFeed');
+      if (feed) {
+        const duplicate = [...feed.children]
+          .find((child) => child.dataset.postId === String(payload.post.id));
+        if (duplicate) duplicate.remove();
+        feed.prepend(createPostCard(payload.post));
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+
       if (document.getElementById("myPosts")) loadMyPosts();
+    } catch (error) {
+      alert(error.message || 'Failed to create post.');
+    } finally {
+      delete inputBox.dataset.sending;
     }
   });
 }
@@ -563,20 +587,30 @@ let globalLoading = false;
 
 async function loadGlobalPosts() {
   const feed = document.getElementById("globalFeed");
-  if (!feed) return;
+  if (!feed || globalLoading) return;
 
-  if (globalLoading) return;
   globalLoading = true;
+  try {
+    const res = await api(`/global-feed?limit=${globalLimit}&offset=${globalOffset}`);
+    if (!res.ok) throw new Error('Failed to load posts.');
+    const posts = await res.json();
+    if (!Array.isArray(posts)) throw new Error('Invalid feed response.');
 
-  const res = await api(`/global-feed?limit=${globalLimit}&offset=${globalOffset}`);
-  const posts = await res.json();
+    const existingIds = new Set(
+      [...feed.children].map((child) => child.dataset.postId).filter(Boolean)
+    );
+    posts.forEach(post => {
+      if (existingIds.has(String(post.id))) return;
+      feed.appendChild(createPostCard(post));
+      existingIds.add(String(post.id));
+    });
 
-  posts.forEach(post => {
-    feed.appendChild(createPostCard(post));
-  });
-
-  globalOffset += globalLimit;
-  globalLoading = false;
+    globalOffset += globalLimit;
+  } catch (error) {
+    console.error(error);
+  } finally {
+    globalLoading = false;
+  }
 }
 
 if (document.getElementById("globalFeed")) {

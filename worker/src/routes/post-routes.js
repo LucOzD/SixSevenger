@@ -7,7 +7,9 @@ import {
   getUserInterests, getUserSentimentPref, getCollaborativeScores,
   getRelevantAccountIds, tokenCountStatements, promotePhrases,
 } from '../storage.js';
-import { UserProfiler, SIGNAL_WEIGHTS, POST_INTEREST_WEIGHT } from '../recommender.js';
+import {
+  UserProfiler, SIGNAL_WEIGHTS, POST_INTEREST_WEIGHT, feedCandidateScore,
+} from '../recommender.js';
 
 export const MAX_POST_LENGTH = 100;
 export const MAX_COMMENT_LENGTH = 100;
@@ -119,8 +121,25 @@ export async function handleSavePost(ctx) {
     console.error('Phrase analysis skipped:', err?.message || err);
   }
 
+  const createdPost = {
+    id,
+    userId: user.id,
+    username: user.username,
+    avatar: user.avatar,
+    text,
+    timestamp,
+    deleted: 0,
+    category_id: result.categoryId,
+    spam_score: 0,
+    sentiment: result.sentiment,
+    likes: 0,
+    dislikes: 0,
+    userVote: 0,
+  };
+
   return json({
     success: true,
+    post: createdPost,
     id,
     timestamp,
     category_id: result.categoryId,
@@ -523,6 +542,21 @@ export async function handleGlobalFeed(ctx) {
     ? `AND p.id NOT IN (${seenIds.map(() => '?').join(',')})`
     : '';
 
+  // Pin the author's latest just-created post once so a refresh confirms that
+  // it was saved. Older authored posts remain outside the recommendation pool.
+  const latestOwnPost = await db
+    .prepare(
+      `SELECT p.*, u.username, u.avatar
+         FROM posts p JOIN users u ON p.userId = u.id
+        WHERE p.userId = ? AND p.deleted = 0 AND p.timestamp > ?
+        ORDER BY p.timestamp DESC LIMIT 1`
+    )
+    .bind(user.id, now - 15 * 60 * 1000)
+    .first();
+  const ownPostToPin = latestOwnPost && !seenSet.has(latestOwnPost.id)
+    ? { ...latestOwnPost, _ownRecent: true }
+    : null;
+
   let candidates = [];
 
   if (relevantIds === null) {
@@ -591,24 +625,46 @@ export async function handleGlobalFeed(ctx) {
     candidateIds.add(p.id);
   }
 
-  // Average engagement per post, as a mild popularity nudge
+  // Passive dwell remains a mild nudge. Explicit likes and comments are
+  // queried separately and receive substantially more weight below.
   const engagementMap = {};
+  const interactionMap = {};
   if (candidates.length > 0) {
     const ids = candidates.map((p) => p.id);
     const ph = ids.map(() => '?').join(',');
-    const rows = await db
-      .prepare(
-        `SELECT postId, AVG(viewMs) AS avgView, AVG(hoverMs) AS avgHover, COUNT(*) AS n
-           FROM engagement WHERE postId IN (${ph})
-          GROUP BY postId HAVING n >= 2`
-      )
-      .bind(...ids)
-      .all();
-    for (const row of rows.results || []) {
+    const [engagementRows, interactionRows] = await Promise.all([
+      db
+        .prepare(
+          `SELECT postId, AVG(viewMs) AS avgView, AVG(hoverMs) AS avgHover, COUNT(*) AS n
+             FROM engagement WHERE postId IN (${ph})
+            GROUP BY postId HAVING n >= 2`
+        )
+        .bind(...ids)
+        .all(),
+      db
+        .prepare(
+          `SELECT p.id AS postId,
+                  (SELECT COUNT(*) FROM likes l WHERE l.postId = p.id AND l.value = 1) AS likes,
+                  (SELECT COUNT(*) FROM likes l WHERE l.postId = p.id AND l.value = -1) AS dislikes,
+                  (SELECT COUNT(*) FROM comments c WHERE c.postId = p.id) AS comments
+             FROM posts p WHERE p.id IN (${ph})`
+        )
+        .bind(...ids)
+        .all(),
+    ]);
+
+    for (const row of engagementRows.results || []) {
       engagementMap[row.postId] = Math.min(
         0.1,
         (row.avgView / 10000) * 0.1 + (row.avgHover / 5000) * 0.03
       );
+    }
+    for (const row of interactionRows.results || []) {
+      interactionMap[row.postId] = {
+        likes: row.likes || 0,
+        dislikes: row.dislikes || 0,
+        comments: row.comments || 0,
+      };
     }
   }
 
@@ -625,7 +681,7 @@ export async function handleGlobalFeed(ctx) {
     else recency = 0.01;
 
     const relevance = Math.max(0.01, catScore) * spamFactor + (engagementMap[p.id] || 0);
-    const baseScore = relevance * 0.8 + recency * 0.2;
+    const baseScore = feedCandidateScore(relevance, recency, interactionMap[p.id]);
     const fallbackFactor = p._fallback ? 0.85 : 1;
     const repeatFactor = p._recentlySeen ? 0.08 : 1;
     return { ...p, _score: baseScore * fallbackFactor * repeatFactor };
@@ -745,6 +801,12 @@ export async function handleGlobalFeed(ctx) {
   topUp(3, false);
   topUp(Number.POSITIVE_INFINITY, false);
 
+  if (ownPostToPin) {
+    const duplicateIndex = finalPosts.findIndex((p) => p.id === ownPostToPin.id);
+    if (duplicateIndex !== -1) finalPosts.splice(duplicateIndex, 1);
+    finalPosts.unshift(ownPostToPin);
+  }
+
   const servedPosts = finalPosts.slice(0, limit);
 
   // Remember what was served
@@ -796,7 +858,7 @@ async function enrichPosts(db, posts, userId) {
   }
 
   return posts.map((p) => {
-    const { _score, _fallback, _recentlySeen, _explore, ...rest } = p;
+    const { _score, _fallback, _recentlySeen, _explore, _ownRecent, ...rest } = p;
     return {
       ...rest,
       likes: counts[p.id]?.likes || 0,

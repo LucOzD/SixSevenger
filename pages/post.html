@@ -28,12 +28,16 @@
 <script src="/javascript.js"></script>
 <script>
 async function loadPostPage() {
-  const pathParts = location.pathname.split('/');
-  const postId = pathParts[pathParts.length - 1];
   const params = new URLSearchParams(location.search);
+  const postId = params.get('id');
   const highlightCommentId = params.get('highlightCommentId');
 
-  const res = await api(`/post-details/${postId}`);
+  if (!postId) {
+    document.body.innerHTML = '<h1>Post not found</h1>';
+    return;
+  }
+
+  const res = await api(`/post-details/${encodeURIComponent(postId)}`);
   if (!res.ok) {
     document.body.innerHTML = '<h1>Post not found</h1>';
     return;
@@ -54,7 +58,7 @@ async function loadPostPage() {
     </div>
   `;
 
-  const commentsRes = await api(`/post/${postId}/comments`);
+  const commentsRes = await api(`/post/${encodeURIComponent(postId)}/comments`);
   const comments = await commentsRes.json();
   const commentsList = document.getElementById('commentsList');
 
@@ -67,7 +71,7 @@ async function loadPostPage() {
   comments.forEach(comment => {
     const div = document.createElement('div');
     div.id = `comment-${comment.id}`;
-    div.className = 'comment-item' + (comment.id === highlightCommentId ? ' comment-highlight' : '');
+    div.className = 'comment-item' + (String(comment.id) === highlightCommentId ? ' comment-highlight' : '');
     div.innerHTML = `
       <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
         ${avatarHtml(comment.avatar, comment.username)}

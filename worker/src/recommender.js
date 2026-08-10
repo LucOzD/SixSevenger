@@ -410,14 +410,38 @@ export class PostAnalyser {
 // UserProfiler — turns per-category interest scores into a ranked feed order
 // ---------------------------------------------------------------------------
 export const SIGNAL_WEIGHTS = {
-  like: 0.20,
-  dislike: -0.25,
-  comment: 0.12,
-  save: 0.25,
+  // Deliberate actions should teach the profile much faster than passive time.
+  like: 0.60,
+  dislike: -0.80,
+  comment: 0.80,
+  save: 0.70,
   view: 0.02,
 };
 
 export const POST_INTEREST_WEIGHT = 0.15;
+
+export const FEED_SCORE_WEIGHTS = {
+  relevance: 0.75,
+  interactions: 0.20,
+  recency: 0.05,
+};
+
+/**
+ * Bounded post-level social proof. Comments carry twice the weight of likes,
+ * while dislikes push the post down. tanh prevents viral totals from
+ * overwhelming personal category relevance.
+ */
+export function postInteractionScore({ likes = 0, dislikes = 0, comments = 0 } = {}) {
+  return Math.tanh((Number(likes) + Number(comments) * 2 - Number(dislikes) * 1.5) / 5);
+}
+
+export function feedCandidateScore(relevance, recency, interactions = {}) {
+  const score =
+    Number(relevance) * FEED_SCORE_WEIGHTS.relevance +
+    postInteractionScore(interactions) * FEED_SCORE_WEIGHTS.interactions +
+    Number(recency) * FEED_SCORE_WEIGHTS.recency;
+  return Math.max(0.0001, score);
+}
 
 export class UserProfiler {
   /**
