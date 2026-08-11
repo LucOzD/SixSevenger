@@ -47,6 +47,24 @@ export async function handleSignup(ctx) {
     return badRequest(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`, ctx);
   }
 
+  // CORS does not stop scripts. Cloudflare's edge limiter uses the verified
+  // client address without persisting it in D1, slowing account rotation.
+  const clientAddress = request.headers.get('CF-Connecting-IP');
+  if (env.SIGNUP_RATE_LIMITER && clientAddress) {
+    const edgeResult = await env.SIGNUP_RATE_LIMITER.limit({ key: clientAddress });
+    if (!edgeResult.success) {
+      return json({
+        error: 'Too many accounts are being created from this network. Try again later.',
+        code: 'SIGNUP_RATE_LIMIT',
+      }, {
+        status: 429,
+        request,
+        env,
+        extraHeaders: { 'Retry-After': '60' },
+      });
+    }
+  }
+
   const existing = await db
     .prepare('SELECT id FROM users WHERE username = ?')
     .bind(username)

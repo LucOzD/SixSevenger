@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS posts (
 -- The feed filters on deleted/spam and orders by recency
 CREATE INDEX IF NOT EXISTS idx_posts_feed ON posts(deleted, spam_score, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_user ON posts(userId, deleted);
+CREATE INDEX IF NOT EXISTS idx_posts_user_time ON posts(userId, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_category ON posts(category_id);
 
 -- ---------------------------------------------------------------- likes
@@ -86,6 +87,19 @@ CREATE TABLE IF NOT EXISTS posting_mutes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_posting_mutes_until ON posting_mutes(muted_until);
+
+-- Each newly triggered posting limit is recorded so repeated automation earns
+-- progressively longer mutes instead of resuming forever after five minutes.
+CREATE TABLE IF NOT EXISTS posting_violations (
+  id      TEXT PRIMARY KEY,
+  userId  TEXT,
+  reason  TEXT,
+  created INTEGER,
+  FOREIGN KEY (userId) REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_posting_violations_user
+  ON posting_violations(userId, created DESC);
 
 -- ---------------------------------------------------------------- follows
 CREATE TABLE IF NOT EXISTS follow_requests (

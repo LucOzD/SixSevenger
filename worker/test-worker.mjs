@@ -153,7 +153,7 @@ check('session tokens are long and random', newSessionToken().length >= 40);
 check('session tokens are unique', newSessionToken() !== newSessionToken());
 
 console.log('\n5. Emoji avatar validation');
-const { sanitiseAvatar } = await import('./src/routes/auth-routes.js');
+const { sanitiseAvatar, handleSignup } = await import('./src/routes/auth-routes.js');
 check('accepts a plain emoji', sanitiseAvatar('😎') === '😎');
 check('accepts a multi-codepoint emoji', sanitiseAvatar('☀️') === '☀️');
 check('trims whitespace', sanitiseAvatar('  🔥  ') === '🔥');
@@ -164,11 +164,24 @@ check('rejects HTML injection', sanitiseAvatar('<img>') === null);
 check('rejects a quote character', sanitiseAvatar('"') === null);
 check('rejects an over-long value', sanitiseAvatar('😎😎😎😎😎😎😎😎😎😎') === null);
 
+const signupRateResponse = await handleSignup({
+  request: new Request('https://api.test/signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.8' },
+    body: JSON.stringify({ username: 'automated-user', password: 'password' }),
+  }),
+  env: { SIGNUP_RATE_LIMITER: { limit: async () => ({ success: false }) } },
+  db: null,
+});
+const signupRateBody = await signupRateResponse.json();
+check('signup edge limiting slows account rotation',
+  signupRateResponse.status === 429 && signupRateBody.code === 'SIGNUP_RATE_LIMIT');
+
 console.log('\n6. Router dispatch');
 // Every table schema.sql creates, so stubs can present a complete schema
 const ALL_TABLES = [
   'users', 'posts', 'likes', 'comments', 'comment_likes', 'posting_mutes',
-  'follow_requests', 'follows',
+  'posting_violations', 'follow_requests', 'follows',
   'notifications', 'user_interests', 'engagement', 'feed_seen', 'hashtags',
   'post_hashtags', 'categories', 'model_meta', 'sessions',
   'token_counts', 'bigram_counts', 'phrases',
@@ -377,7 +390,7 @@ function feedRegressionDb(posts) {
     }
     if (/SELECT p\.\*, u\.username, u\.avatar/i.test(sql)) {
       let results = posts.filter((post) => post.userId !== USER.id);
-      if (/NOT EXISTS/i.test(sql)) {
+      if (/FROM feed_seen fs/i.test(sql)) {
         results = results.filter((post) => !recentlySeen.has(post.id));
       }
       return { results };
@@ -389,7 +402,7 @@ function feedRegressionDb(posts) {
     if (/WHERE p\.userId = \?.*p\.timestamp > \?/is.test(sql)) {
       return posts
         .filter((post) => post.userId === USER.id && post.deleted === 0)
-        .filter((post) => !/NOT EXISTS/i.test(sql) || !recentlySeen.has(post.id))
+        .filter((post) => !/FROM feed_seen fs/i.test(sql) || !recentlySeen.has(post.id))
         .sort((a, b) => b.timestamp - a.timestamp)[0] || null;
     }
     return null;
@@ -434,7 +447,20 @@ const ownRecentPost = {
   spam_score: 0,
   sentiment: 0,
 };
-const feedPosts = [ownRecentPost, ...Array.from({ length: 22 }, (_, index) => ({
+const legacyFeedSpam = Array.from({ length: 8 }, (_, index) => ({
+  id: `legacy-spam-${index}`,
+  userId: 'legacy-flooder',
+  username: 'legacy-flooder',
+  avatar: '🤖',
+  text: 'BUY THIS SAME THING NOW',
+  timestamp: Date.now() - index * 1000,
+  deleted: 0,
+  category_id: 0,
+  spam_score: 0,
+  sentiment: 0,
+}));
+const feedPosts = [ownRecentPost, ...legacyFeedSpam,
+  ...Array.from({ length: 22 }, (_, index) => ({
   id: `post-${index}`,
   userId: `author-${index % 11}`,
   username: `author${index % 11}`,
@@ -458,6 +484,8 @@ const firstSeenCount = feedDb.recentlySeen.size;
 const refreshedFeed = await (await handleGlobalFeed(feedContext)).json();
 check('first feed load fills the requested page', firstFeed.length === 20,
   `got ${firstFeed.length}`);
+check('legacy zero-score duplicate floods are absent from the feed',
+  firstFeed.every((postItem) => !String(postItem.id).startsWith('legacy-spam-')));
 check('latest unseen authored post is pinned first', firstFeed[0]?.id === ownRecentPost.id,
   `first=${firstFeed[0]?.id}`);
 check('internal own-post marker is not exposed', firstFeed[0]?._ownRecent === undefined);

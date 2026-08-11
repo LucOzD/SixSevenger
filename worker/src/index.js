@@ -38,7 +38,7 @@ import {
 // migrated database reports itself instead of failing obscurely at runtime.
 const REQUIRED_TABLES = [
   'users', 'posts', 'likes', 'comments', 'comment_likes', 'posting_mutes',
-  'follow_requests', 'follows', 'notifications',
+  'posting_violations', 'follow_requests', 'follows', 'notifications',
   'user_interests', 'engagement', 'feed_seen',
   'hashtags', 'post_hashtags',
   'categories', 'model_meta', 'sessions',

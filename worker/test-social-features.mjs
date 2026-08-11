@@ -19,7 +19,7 @@ const postRequest = (message) => new Request('https://api.test/save-message', {
   body: JSON.stringify({ message }),
 });
 
-function postingDb({ recent = [], mute = null } = {}) {
+function postingDb({ recent = [], mute = null, violationCount = 0 } = {}) {
   const runs = [];
   const batches = [];
   return {
@@ -34,7 +34,11 @@ function postingDb({ recent = [], mute = null } = {}) {
             all: async () => /FROM posts WHERE userId/i.test(sql)
               ? { results: recent }
               : { results: [] },
-            first: async () => /FROM posting_mutes/i.test(sql) ? mute : null,
+            first: async () => {
+              if (/FROM posting_mutes/i.test(sql)) return mute;
+              if (/FROM posting_violations/i.test(sql)) return { c: violationCount };
+              return null;
+            },
             run: async () => { runs.push(statement); return {}; },
           };
         },
@@ -58,7 +62,8 @@ check('sixth new post is rejected with HTTP 429', limitedResponse.status === 429
 check('rate rejection returns an actionable mute contract',
   limitedBody.code === 'POSTING_MUTED' && limitedBody.retryAfterMs === 300_000);
 check('deleted rows count and the mute is persisted for this account',
-  limitedDb.runs.some((run) => /INSERT INTO posting_mutes/i.test(run.sql) && run.args[0] === user.id));
+  limitedDb.batches.some((batch) => batch.some((statement) =>
+    /INSERT INTO posting_mutes/i.test(statement.sql) && statement.args[0] === user.id)));
 
 const activeUntil = NOW + 120_000;
 const mutedDb = postingDb({ mute: { muted_until: activeUntil } });
@@ -68,6 +73,28 @@ const mutedResponse = await handleSavePost({
 const mutedBody = await mutedResponse.json();
 check('an active mute returns its original expiry', mutedBody.mutedUntil === activeUntil);
 check('a blocked request does not extend an active mute', mutedDb.runs.length === 0);
+
+const repeatedViolationDb = postingDb({ recent: fiveRecent, violationCount: 2 });
+const repeatedViolationBody = await (await handleSavePost({
+  request: postRequest('another distinct post'), env, db: repeatedViolationDb, user,
+})).json();
+check('repeated posting violations earn progressively longer mutes',
+  repeatedViolationBody.retryAfterMs === 20 * 60_000,
+  `retryAfterMs=${repeatedViolationBody.retryAfterMs}`);
+
+const networkLimited = await handleSavePost({
+  request: new Request('https://api.test/save-message', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.5' },
+    body: JSON.stringify({ message: 'rotated account post' }),
+  }),
+  env: { POST_NETWORK_RATE_LIMITER: { limit: async () => ({ success: false }) } },
+  db: postingDb(),
+  user,
+});
+const networkLimitedBody = await networkLimited.json();
+check('edge network limiting catches account rotation',
+  networkLimited.status === 429 && networkLimitedBody.code === 'POST_NETWORK_RATE_LIMIT');
 
 const retryDb = postingDb({
   recent: [{

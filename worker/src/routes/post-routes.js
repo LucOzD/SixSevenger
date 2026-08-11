@@ -14,8 +14,9 @@ import { extractHashtags } from '../vectorizer.js';
 import { sentimentScore } from '../sentiment.js';
 import {
   SPAM_HIDE_THRESHOLD, SPAM_QUARANTINE_THRESHOLD, POST_MUTE_MS,
-  IDENTICAL_POST_WINDOW_MS, assessPostingSpam, assessExistingSpam,
-  findPostingRetry, isPostingRateLimited, matchingIdenticalPosts,
+  POST_VIOLATION_MEMORY_MS, IDENTICAL_POST_WINDOW_MS, assessPostingSpam,
+  assessExistingSpam, filterFeedSpam, findPostingRetry, isFeedEligiblePost,
+  isPostingRateLimited, matchingIdenticalPosts, postingLimitViolation,
   spamRankMultiplier,
 } from '../spam.js';
 
@@ -28,11 +29,74 @@ const HASHTAG_INTEREST_WEIGHT = 0.05;
 // read of the top pairs plus a full rewrite of the phrase table each time.
 const PHRASE_REVIEW_EVERY = 20;
 const MAX_FEED_CANDIDATES = 80;
+const MAX_FEED_SCAN_CANDIDATES = MAX_FEED_CANDIDATES * 3;
 const RECENT_SEEN_MS = 5 * 60 * 1000;
+
+// Reject known spam before LIMIT is applied, so a legacy flood cannot occupy
+// the whole candidate window and hide clean posts below it. The nested window
+// mirrors the five-identical-posts-in-five-hours moderation rule.
+const FEED_ELIGIBILITY_SQL = `
+  p.deleted = 0
+  AND p.spam_score >= 0
+  AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
+  AND p.category_id != -1
+  AND NOT EXISTS (
+    SELECT 1 FROM posts anchor
+     WHERE anchor.userId = p.userId
+       AND anchor.deleted = 0
+       AND LOWER(TRIM(anchor.text)) = LOWER(TRIM(p.text))
+       AND anchor.timestamp BETWEEN p.timestamp - ${IDENTICAL_POST_WINDOW_MS} AND p.timestamp
+       AND (
+         SELECT COUNT(*) FROM posts repeated
+          WHERE repeated.userId = p.userId
+            AND repeated.deleted = 0
+            AND LOWER(TRIM(repeated.text)) = LOWER(TRIM(p.text))
+            AND repeated.timestamp BETWEEN anchor.timestamp
+                                       AND anchor.timestamp + ${IDENTICAL_POST_WINDOW_MS}
+       ) >= 5
+  )`;
 
 // ---------------------------------------------------------------------------
 // Create a post
 // ---------------------------------------------------------------------------
+async function createProgressivePostingMute(db, userId, reason, baseMuteMs, now) {
+  const prior = await db
+    .prepare(
+      'SELECT COUNT(*) AS c FROM posting_violations WHERE userId = ? AND created > ?'
+    )
+    .bind(userId, now - POST_VIOLATION_MEMORY_MS)
+    .first();
+  const multiplier = Math.pow(2, Math.min(4, Number(prior?.c) || 0));
+  const muteMs = Math.min(24 * 60 * 60 * 1000, baseMuteMs * multiplier);
+  const mutedUntil = now + muteMs;
+
+  await db.batch([
+    db
+      .prepare('INSERT INTO posting_violations (id, userId, reason, created) VALUES (?, ?, ?, ?)')
+      .bind(uuid(), userId, reason, now),
+    db
+      .prepare(
+        `INSERT INTO posting_mutes (userId, muted_until, created) VALUES (?, ?, ?)
+         ON CONFLICT(userId) DO UPDATE SET
+           muted_until = excluded.muted_until,
+           created = excluded.created`
+      )
+      .bind(userId, mutedUntil, now),
+  ]);
+
+  return { muteMs, mutedUntil };
+}
+
+function postingLimitResponse(ctx, { code, mutedUntil, retryAfterMs, error }) {
+  const { request, env } = ctx;
+  return json({ error, code, mutedUntil, retryAfterMs }, {
+    status: 429,
+    request,
+    env,
+    extraHeaders: { 'Retry-After': String(Math.ceil(retryAfterMs / 1000)) },
+  });
+}
+
 export async function handleSavePost(ctx) {
   const { request, env, db, user } = ctx;
   if (!user) return unauthorized(null, ctx);
@@ -99,40 +163,53 @@ export async function handleSavePost(ctx) {
     .first();
   if (Number(mute?.muted_until) > timestamp) {
     const retryAfterMs = Number(mute.muted_until) - timestamp;
-    return json({
+    return postingLimitResponse(ctx, {
       error: 'Posting is muted temporarily because this account posted too quickly.',
       code: 'POSTING_MUTED',
       mutedUntil: Number(mute.muted_until),
       retryAfterMs,
-    }, {
-      status: 429,
-      request,
-      env,
-      extraHeaders: { 'Retry-After': String(Math.ceil(retryAfterMs / 1000)) },
     });
   }
 
+  // This edge-local limit is keyed by Cloudflare's verified client address and
+  // catches account rotation. D1 account limits below remain authoritative.
+  if (env.POST_NETWORK_RATE_LIMITER) {
+    const networkKey = request.headers.get('CF-Connecting-IP') || `user:${user.id}`;
+    const edgeResult = await env.POST_NETWORK_RATE_LIMITER.limit({ key: networkKey });
+    if (!edgeResult.success) {
+      return postingLimitResponse(ctx, {
+        error: 'Too many posts are coming from this network. Try again shortly.',
+        code: 'POST_NETWORK_RATE_LIMIT',
+        mutedUntil: timestamp + 60_000,
+        retryAfterMs: 60_000,
+      });
+    }
+  }
+
   if (isPostingRateLimited(recentPosts, timestamp)) {
-    const mutedUntil = timestamp + POST_MUTE_MS;
-    await db
-      .prepare(
-        `INSERT INTO posting_mutes (userId, muted_until, created) VALUES (?, ?, ?)
-         ON CONFLICT(userId) DO UPDATE SET
-           muted_until = excluded.muted_until,
-           created = excluded.created`
-      )
-      .bind(user.id, mutedUntil, timestamp)
-      .run();
-    return json({
-      error: 'Posting muted for 5 minutes after five posts in one minute.',
+    const progressive = await createProgressivePostingMute(
+      db, user.id, 'one_minute', POST_MUTE_MS, timestamp
+    );
+    return postingLimitResponse(ctx, {
+      error: 'Posting muted after five posts in one minute.',
       code: 'POSTING_MUTED',
-      mutedUntil,
-      retryAfterMs: POST_MUTE_MS,
-    }, {
-      status: 429,
-      request,
-      env,
-      extraHeaders: { 'Retry-After': String(POST_MUTE_MS / 1000) },
+      mutedUntil: progressive.mutedUntil,
+      retryAfterMs: progressive.muteMs,
+    });
+  }
+
+  const longLimit = postingLimitViolation(recentPosts, user.created, timestamp);
+  if (longLimit) {
+    const progressive = await createProgressivePostingMute(
+      db, user.id, longLimit.code, longLimit.muteMs, timestamp
+    );
+    return postingLimitResponse(ctx, {
+      error: longLimit.probation
+        ? 'New accounts have a lower posting limit while trust is established.'
+        : 'This account reached a longer-term posting limit.',
+      code: longLimit.code,
+      mutedUntil: progressive.mutedUntil,
+      retryAfterMs: progressive.muteMs,
     });
   }
 
@@ -515,10 +592,10 @@ async function updateSpamScore(db, postId) {
       .first(),
     db
       .prepare(
-        `SELECT id, text, timestamp, spam_score FROM posts
-          WHERE userId = ? AND id != ? AND deleted = 0
+        `SELECT id, text, timestamp, deleted, spam_score FROM posts
+          WHERE userId = ? AND id != ?
             AND timestamp > ? AND timestamp <= ?
-          ORDER BY timestamp DESC LIMIT 50`
+          ORDER BY timestamp DESC`
       )
       .bind(post.userId, postId, Number(post.timestamp) - 24 * 60 * 60 * 1000,
             Number(post.timestamp))
@@ -771,13 +848,13 @@ export async function handleGlobalFeed(ctx) {
       .prepare(
         `SELECT p.*, u.username, u.avatar
            FROM posts p JOIN users u ON p.userId = u.id
-          WHERE p.deleted = 0 AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
-            AND p.category_id != -1
+          WHERE ${FEED_ELIGIBILITY_SQL}
           ORDER BY p.timestamp DESC LIMIT ?`
       )
       .bind(limit)
       .all();
-    return json(await enrichPosts(db, rows.results || [], null), { request, env });
+    const safePosts = filterFeedSpam(rows.results || []).slice(0, limit);
+    return json(await enrichPosts(db, safePosts, null), { request, env });
   }
 
   const interests = await getUserInterests(db, user.id);
@@ -806,12 +883,11 @@ export async function handleGlobalFeed(ctx) {
 
   // Pin the author's latest just-created post once so a refresh confirms that
   // it was saved. NOT EXISTS avoids large dynamic NOT IN parameter lists.
-  const ownPostToPin = await db
+  let ownPostToPin = await db
     .prepare(
       `SELECT p.*, u.username, u.avatar
          FROM posts p JOIN users u ON p.userId = u.id
-        WHERE p.userId = ? AND p.deleted = 0
-          AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
+        WHERE p.userId = ? AND ${FEED_ELIGIBILITY_SQL}
           AND p.timestamp > ?
           AND NOT EXISTS (
             SELECT 1 FROM feed_seen fs
@@ -821,6 +897,7 @@ export async function handleGlobalFeed(ctx) {
     )
     .bind(user.id, now - 15 * 60 * 1000, user.id, recentCutoff)
     .first();
+  if (ownPostToPin && !isFeedEligiblePost(ownPostToPin)) ownPostToPin = null;
   if (ownPostToPin) ownPostToPin._ownRecent = true;
 
   let candidates = [];
@@ -831,14 +908,12 @@ export async function handleGlobalFeed(ctx) {
       .prepare(
         `SELECT p.*, u.username, u.avatar
            FROM posts p JOIN users u ON p.userId = u.id
-          WHERE p.userId != ? AND p.deleted = 0
-            AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
-            AND p.category_id != -1
+          WHERE p.userId != ? AND ${FEED_ELIGIBILITY_SQL}
             AND NOT EXISTS (
               SELECT 1 FROM feed_seen fs
                WHERE fs.userId = ? AND fs.postId = p.id AND fs.seenAt > ?
             )
-          ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_CANDIDATES}`
+          ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_SCAN_CANDIDATES}`
       )
       .bind(user.id, user.id, recentCutoff)
       .all();
@@ -846,7 +921,7 @@ export async function handleGlobalFeed(ctx) {
     const perCategory = new Set();
     const spread = [];
     const rest = [];
-    for (const p of rows.results || []) {
+    for (const p of filterFeedSpam(rows.results || []).slice(0, MAX_FEED_CANDIDATES)) {
       if (!perCategory.has(p.category_id)) {
         perCategory.add(p.category_id);
         spread.push(p);
@@ -862,17 +937,16 @@ export async function handleGlobalFeed(ctx) {
         `SELECT p.*, u.username, u.avatar
            FROM posts p JOIN users u ON p.userId = u.id
           WHERE p.userId IN (${ph}) AND p.userId != ?
-            AND p.deleted = 0 AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
-            AND p.category_id != -1
+            AND ${FEED_ELIGIBILITY_SQL}
             AND NOT EXISTS (
               SELECT 1 FROM feed_seen fs
                WHERE fs.userId = ? AND fs.postId = p.id AND fs.seenAt > ?
             )
-          ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_CANDIDATES}`
+          ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_SCAN_CANDIDATES}`
       )
       .bind(...relevantIds, user.id, user.id, recentCutoff)
       .all();
-    candidates = rows.results || [];
+    candidates = filterFeedSpam(rows.results || []).slice(0, MAX_FEED_CANDIDATES);
   }
 
   // Fill relevant-account gaps with unseen posts from the whole network. This
@@ -882,20 +956,18 @@ export async function handleGlobalFeed(ctx) {
     .prepare(
       `SELECT p.*, u.username, u.avatar
          FROM posts p JOIN users u ON p.userId = u.id
-        WHERE p.userId != ? AND p.deleted = 0
-          AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
-          AND p.category_id != -1
+        WHERE p.userId != ? AND ${FEED_ELIGIBILITY_SQL}
           AND NOT EXISTS (
             SELECT 1 FROM feed_seen fs
              WHERE fs.userId = ? AND fs.postId = p.id AND fs.seenAt > ?
           )
-        ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_CANDIDATES}`
+        ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_SCAN_CANDIDATES}`
     )
     .bind(user.id, user.id, recentCutoff)
     .all();
 
   const candidateIds = new Set(candidates.map((p) => p.id));
-  for (const p of unseenPool.results || []) {
+  for (const p of filterFeedSpam(unseenPool.results || [])) {
     if (candidates.length >= MAX_FEED_CANDIDATES) break;
     if (candidateIds.has(p.id)) continue;
     candidates.push({ ...p, _fallback: true });
@@ -909,14 +981,12 @@ export async function handleGlobalFeed(ctx) {
       .prepare(
         `SELECT p.*, u.username, u.avatar
            FROM posts p JOIN users u ON p.userId = u.id
-          WHERE p.userId != ? AND p.deleted = 0
-            AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
-            AND p.category_id != -1
-          ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_CANDIDATES}`
+          WHERE p.userId != ? AND ${FEED_ELIGIBILITY_SQL}
+          ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_SCAN_CANDIDATES}`
       )
       .bind(user.id)
       .all();
-    for (const p of repeatPool.results || []) {
+    for (const p of filterFeedSpam(repeatPool.results || [])) {
       if (candidates.length >= MAX_FEED_CANDIDATES) break;
       if (candidateIds.has(p.id)) continue;
       candidates.push({ ...p, _fallback: true, _recentlySeen: true });
@@ -931,12 +1001,13 @@ export async function handleGlobalFeed(ctx) {
       .prepare(
         `SELECT p.*, u.username, u.avatar
            FROM posts p JOIN users u ON p.userId = u.id
-          WHERE p.deleted = 0 AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
-            AND p.category_id != -1
-          ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_CANDIDATES}`
+          WHERE ${FEED_ELIGIBILITY_SQL}
+          ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_SCAN_CANDIDATES}`
       )
       .all();
-    candidates = (emergencyRows.results || []).map((p) => ({
+    candidates = filterFeedSpam(emergencyRows.results || [])
+      .slice(0, MAX_FEED_CANDIDATES)
+      .map((p) => ({
       ...p,
       _fallback: true,
       _recentlySeen: true,
@@ -1066,7 +1137,7 @@ export async function handleGlobalFeed(ctx) {
           `SELECT p.*, u.username, u.avatar
              FROM posts p JOIN users u ON p.userId = u.id
             WHERE p.category_id IN (${ph}) AND p.userId != ?
-              AND p.deleted = 0 AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
+              AND ${FEED_ELIGIBILITY_SQL}
               AND NOT EXISTS (
                 SELECT 1 FROM feed_seen fs
                  WHERE fs.userId = ? AND fs.postId = p.id AND fs.seenAt > ?
@@ -1075,7 +1146,7 @@ export async function handleGlobalFeed(ctx) {
         )
         .bind(...simIds, user.id, user.id, recentCutoff)
         .all();
-      for (const p of rows.results || []) {
+      for (const p of filterFeedSpam(rows.results || [])) {
         if (explore.length >= exploreSlots) break;
         if (have.has(p.id)) continue;
         explore.push({ ...p, _explore: true });
@@ -1117,7 +1188,6 @@ export async function handleGlobalFeed(ctx) {
 
   topUp(3, true);
   topUp(3, false);
-  topUp(Number.POSITIVE_INFINITY, false);
 
   if (ownPostToPin) {
     const duplicateIndex = finalPosts.findIndex((p) => p.id === ownPostToPin.id);
@@ -1125,7 +1195,8 @@ export async function handleGlobalFeed(ctx) {
     finalPosts.unshift(ownPostToPin);
   }
 
-  const servedPosts = finalPosts.slice(0, limit);
+  // Fail closed even if a future candidate path forgets the SQL guard.
+  const servedPosts = filterFeedSpam(finalPosts).slice(0, limit);
 
   // Remember what was served
   if (servedPosts.length > 0) {

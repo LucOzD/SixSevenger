@@ -33,5 +33,17 @@ ALLOWED_ORIGINS = "https://sixsevenger.pages.dev,https://*.sixsevenger.pages.dev
 # this to "Lax" instead, otherwise the browser will drop the cookie.
 SESSION_SAMESITE = "None"
 
+# Edge-local limits make direct API scripts and account rotation more costly.
+# D1 account budgets remain authoritative across Cloudflare locations.
+[[ratelimits]]
+name = "SIGNUP_RATE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 3, period = 60 }
+
+[[ratelimits]]
+name = "POST_NETWORK_RATE_LIMITER"
+namespace_id = "1002"
+simple = { limit = 10, period = 60 }
+
 [observability]
 enabled = true
