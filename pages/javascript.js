@@ -152,6 +152,33 @@ function updateNotificationIcon(count) {
   badge.textContent = count > 0 ? count : '';
 }
 
+function notificationPayload(item) {
+  try {
+    return item.payload ? JSON.parse(item.payload) : {};
+  } catch {
+    return {};
+  }
+}
+
+function notificationTarget(item) {
+  const payload = notificationPayload(item);
+  if ((item.type === 'comment' || item.type === 'like') && payload.postId) {
+    const query = new URLSearchParams({ id: String(payload.postId) });
+    if (payload.commentId) query.set('highlightCommentId', String(payload.commentId));
+    return `/post.html?${query.toString()}`;
+  }
+  if (payload.fromUserId) return `/user.html?id=${encodeURIComponent(payload.fromUserId)}`;
+  return null;
+}
+
+async function dismissNotification(item, row) {
+  const res = await api(`/notifications/${encodeURIComponent(item.id)}/dismiss`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to dismiss notification.');
+  const data = await res.json();
+  row?.remove();
+  updateNotificationIcon(Number(data.unread) || 0);
+}
+
 function renderNotifications(items) {
   const list = document.getElementById('notificationList');
   if (!list) return;
@@ -162,34 +189,46 @@ function renderNotifications(items) {
   }
 
   items.forEach(item => {
-    const payload = item.payload ? JSON.parse(item.payload) : {};
+    const payload = notificationPayload(item);
     const row = document.createElement('div');
     row.className = `notification-item ${item.read ? 'read' : 'unread'}`;
 
-    const messageHtml = `
-      <div class="notification-item-text">${payload.message || 'New activity'}</div>
-      <div class="notification-item-meta">${new Date(item.created).toLocaleString()}</div>
-    `;
+    const content = document.createElement('div');
+    content.className = 'notification-content';
+    const message = document.createElement('div');
+    message.className = 'notification-item-text';
+    message.textContent = payload.message || 'New activity';
+    const meta = document.createElement('div');
+    meta.className = 'notification-item-meta';
+    meta.textContent = new Date(item.created).toLocaleString();
+    content.append(message, meta);
 
-    row.innerHTML = `
-      <div class="notification-content">${messageHtml}</div>
-      <button class="notification-dismiss-btn">Dismiss</button>
-    `;
+    const dismissBtn = document.createElement('button');
+    dismissBtn.className = 'notification-dismiss-btn';
+    dismissBtn.textContent = 'Dismiss';
+    row.append(content, dismissBtn);
 
-    row.addEventListener('click', (evt) => {
-      if (evt.target.classList.contains('notification-dismiss-btn')) return;
-      navigateNotification(item);
+    row.addEventListener('click', async (evt) => {
+      if (evt.target === dismissBtn || row.dataset.busy === 'true') return;
+      row.dataset.busy = 'true';
+      try {
+        const target = notificationTarget(item);
+        await dismissNotification(item, row);
+        if (target) window.location.href = target;
+      } catch (error) {
+        row.dataset.busy = 'false';
+        alert(error.message || 'Failed to open notification.');
+      }
     });
 
-    const dismissBtn = row.querySelector('.notification-dismiss-btn');
     dismissBtn.addEventListener('click', async (evt) => {
       evt.stopPropagation();
-      await api(`/notifications/${item.id}/dismiss`, { method: 'POST' });
-      row.remove();
-      const badge = document.getElementById('notificationBadge');
-      if (badge) {
-        const count = parseInt(badge.textContent || '0', 10) - 1;
-        badge.textContent = count > 0 ? count : '';
+      dismissBtn.disabled = true;
+      try {
+        await dismissNotification(item, row);
+      } catch (error) {
+        dismissBtn.disabled = false;
+        alert(error.message || 'Failed to dismiss notification.');
       }
     });
 
@@ -198,27 +237,8 @@ function renderNotifications(items) {
 }
 
 function navigateNotification(item) {
-  const payload = item.payload ? JSON.parse(item.payload) : {};
-
-  if (item.type === 'comment' || item.type === 'like') {
-    if (payload.postId) {
-      const query = new URLSearchParams({ id: String(payload.postId) });
-      if (payload.commentId) query.set('highlightCommentId', String(payload.commentId));
-      window.location.href = `/post.html?${query.toString()}`;
-      return;
-    }
-  }
-
-  if (item.type === 'follow_request' || item.type === 'follow_accept') {
-    if (payload.fromUserId) {
-      window.location.href = `/user.html?id=${payload.fromUserId}`;
-      return;
-    }
-  }
-
-  if (payload.fromUserId) {
-    window.location.href = `/user.html?id=${payload.fromUserId}`;
-  }
+  const target = notificationTarget(item);
+  if (target) window.location.href = target;
 }
 
 window.loadMyInfoPromise = loadMyInfo();
@@ -288,7 +308,9 @@ if (inputBox) {
         const duplicate = [...feed.children]
           .find((child) => child.dataset.postId === String(payload.post.id));
         if (duplicate) duplicate.remove();
-        feed.prepend(createPostCard(payload.post));
+        const createdCard = createPostCard(payload.post);
+        createdCard.dataset.optimistic = 'true';
+        feed.prepend(createdCard);
         window.scrollTo({ top: 0, behavior: 'smooth' });
       }
 
@@ -581,43 +603,62 @@ if (document.getElementById("myPosts")) loadMyPosts();
 // GLOBAL FEED + INFINITE SCROLL
 // =========================================================
 
-let globalOffset = 0;
 const globalLimit = 20;
 let globalLoading = false;
 
 async function loadGlobalPosts() {
   const feed = document.getElementById("globalFeed");
-  if (!feed || globalLoading) return;
+  if (!feed || globalLoading) return 0;
 
   globalLoading = true;
+  const loading = document.getElementById('loading');
+  if (loading) loading.style.display = 'block';
   try {
-    const res = await api(`/global-feed?limit=${globalLimit}&offset=${globalOffset}`);
+    const res = await api(`/global-feed?limit=${globalLimit}`);
     if (!res.ok) throw new Error('Failed to load posts.');
     const posts = await res.json();
     if (!Array.isArray(posts)) throw new Error('Invalid feed response.');
 
-    const existingIds = new Set(
-      [...feed.children].map((child) => child.dataset.postId).filter(Boolean)
-    );
-    posts.forEach(post => {
-      if (existingIds.has(String(post.id))) return;
+    let appended = 0;
+    for (const post of posts) {
+      // The optimistic card created after posting is the only duplicate to
+      // suppress. Once the finite post pool is exhausted, repeated cards are
+      // intentional so scrolling can continue indefinitely.
+      const optimistic = [...feed.children].find((child) =>
+        child.dataset.optimistic === 'true' &&
+        child.dataset.postId === String(post.id)
+      );
+      if (optimistic) {
+        delete optimistic.dataset.optimistic;
+        continue;
+      }
       feed.appendChild(createPostCard(post));
-      existingIds.add(String(post.id));
-    });
-
-    globalOffset += globalLimit;
+      appended++;
+    }
+    return appended;
   } catch (error) {
     console.error(error);
+    return 0;
   } finally {
+    if (loading) loading.style.display = 'none';
     globalLoading = false;
   }
 }
 
+async function fillFeedViewport() {
+  // A short first page may not create a scrollbar, so no scroll event would
+  // ever request the next page. Fill a few batches immediately when needed.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const added = await loadGlobalPosts();
+    if (added === 0 || document.body.offsetHeight > window.innerHeight + 300) break;
+  }
+}
+
 if (document.getElementById("globalFeed")) {
-  loadGlobalPosts();
+  fillFeedViewport();
 
   window.addEventListener("scroll", () => {
-    if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 200) {
+    if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 500) {
       loadGlobalPosts();
     }
   });

@@ -376,7 +376,7 @@ function feedRegressionDb(posts) {
     }
     if (/SELECT p\.\*, u\.username, u\.avatar/i.test(sql)) {
       let results = posts.filter((post) => post.userId !== USER.id);
-      if (/NOT IN/i.test(sql)) {
+      if (/NOT EXISTS/i.test(sql)) {
         results = results.filter((post) => !recentlySeen.has(post.id));
       }
       return { results };
@@ -388,6 +388,7 @@ function feedRegressionDb(posts) {
     if (/WHERE p\.userId = \?.*p\.timestamp > \?/is.test(sql)) {
       return posts
         .filter((post) => post.userId === USER.id && post.deleted === 0)
+        .filter((post) => !/NOT EXISTS/i.test(sql) || !recentlySeen.has(post.id))
         .sort((a, b) => b.timestamp - a.timestamp)[0] || null;
     }
     return null;

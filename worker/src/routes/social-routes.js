@@ -214,5 +214,9 @@ export async function handleDismissNotification(ctx, params) {
     .prepare('UPDATE notifications SET read = 1 WHERE id = ? AND userId = ?')
     .bind(params.id, user.id)
     .run();
-  return json({ success: true }, { request, env });
+  const unread = await db
+    .prepare('SELECT COUNT(*) AS c FROM notifications WHERE userId = ? AND read = 0')
+    .bind(user.id)
+    .first();
+  return json({ success: true, unread: unread?.c || 0 }, { request, env });
 }

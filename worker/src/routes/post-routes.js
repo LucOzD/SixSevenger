@@ -10,6 +10,12 @@ import {
 import {
   UserProfiler, SIGNAL_WEIGHTS, POST_INTEREST_WEIGHT, feedCandidateScore,
 } from '../recommender.js';
+import { extractHashtags } from '../vectorizer.js';
+import { sentimentScore } from '../sentiment.js';
+import {
+  SPAM_HIDE_THRESHOLD, SPAM_QUARANTINE_THRESHOLD,
+  assessPostingSpam, assessExistingSpam, spamRankMultiplier,
+} from '../spam.js';
 
 export const MAX_POST_LENGTH = 100;
 export const MAX_COMMENT_LENGTH = 100;
@@ -19,6 +25,8 @@ const HASHTAG_INTEREST_WEIGHT = 0.05;
 // How often to rescore collocations. Doing it on every post would mean an extra
 // read of the top pairs plus a full rewrite of the phrase table each time.
 const PHRASE_REVIEW_EVERY = 20;
+const MAX_FEED_CANDIDATES = 80;
+const RECENT_SEEN_MS = 5 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Create a post
@@ -36,6 +44,77 @@ export async function handleSavePost(ctx) {
 
   const id = uuid();
   const timestamp = Date.now();
+
+  // Score the post before it can train categories. Repeated submissions inside
+  // 30 seconds are treated as one idempotent request; floods and repeated
+  // content are heavily penalised immediately rather than waiting for votes.
+  const recentRows = await db
+    .prepare(
+      `SELECT id, text, timestamp, spam_score, category_id, sentiment
+         FROM posts WHERE userId = ? AND deleted = 0 AND timestamp > ?
+        ORDER BY timestamp DESC LIMIT 50`
+    )
+    .bind(user.id, timestamp - 24 * 60 * 60 * 1000)
+    .all();
+  const antiSpam = assessPostingSpam(text, recentRows.results || [], timestamp);
+
+  if (antiSpam.retry) {
+    const existing = antiSpam.retry;
+    return json({
+      success: true,
+      duplicate: true,
+      post: {
+        ...existing,
+        userId: user.id,
+        username: user.username,
+        avatar: user.avatar,
+        deleted: 0,
+        likes: 0,
+        dislikes: 0,
+        userVote: 0,
+      },
+      id: existing.id,
+      timestamp: existing.timestamp,
+      category_id: existing.category_id,
+      sentiment: existing.sentiment,
+      spam_score: existing.spam_score || 0,
+    }, { request, env });
+  }
+
+  // Medium/high-confidence spam is stored for the author to inspect, but it is
+  // quarantined before it can train categories, interests, or phrase counts.
+  if (antiSpam.score >= SPAM_QUARANTINE_THRESHOLD) {
+    const sentiment = sentimentScore(text);
+    const hashtags = extractHashtags(text);
+    await db
+      .prepare(
+        `INSERT INTO posts (id, userId, text, timestamp, deleted, category_id, spam_score, post_vector, sentiment)
+         VALUES (?, ?, ?, ?, 0, -1, ?, '{}', ?)`
+      )
+      .bind(id, user.id, text, timestamp, antiSpam.score, sentiment)
+      .run();
+
+    const post = {
+      id, userId: user.id, username: user.username, avatar: user.avatar,
+      text, timestamp, deleted: 0, category_id: -1,
+      spam_score: antiSpam.score, sentiment, likes: 0, dislikes: 0, userVote: 0,
+    };
+    return json({
+      success: true,
+      post,
+      id,
+      timestamp,
+      category_id: -1,
+      sentiment,
+      hashtags,
+      spam_score: antiSpam.score,
+      spamReasons: antiSpam.reasons,
+      quarantined: true,
+      hidden: antiSpam.score >= SPAM_HIDE_THRESHOLD,
+      splitInto: null,
+      phrasesReviewed: null,
+    }, { request, env });
+  }
 
   // Vectors are needed here so a category can split if it has grown incoherent
   const analyser = await loadAnalyser(db, { withVectors: true });
@@ -68,9 +147,9 @@ export async function handleSavePost(ctx) {
     db
       .prepare(
         `INSERT INTO posts (id, userId, text, timestamp, deleted, category_id, spam_score, post_vector, sentiment)
-         VALUES (?, ?, ?, ?, 0, ?, 0, ?, ?)`
+         VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)`
       )
-      .bind(id, user.id, text, timestamp, result.categoryId,
+      .bind(id, user.id, text, timestamp, result.categoryId, antiSpam.score,
             JSON.stringify(result.vector), result.sentiment),
     recordCategoryScoreStmt(db, user.id, result.categoryId, POST_INTEREST_WEIGHT),
   ];
@@ -130,7 +209,7 @@ export async function handleSavePost(ctx) {
     timestamp,
     deleted: 0,
     category_id: result.categoryId,
-    spam_score: 0,
+    spam_score: antiSpam.score,
     sentiment: result.sentiment,
     likes: 0,
     dislikes: 0,
@@ -144,6 +223,8 @@ export async function handleSavePost(ctx) {
     timestamp,
     category_id: result.categoryId,
     sentiment: result.sentiment,
+    spam_score: antiSpam.score,
+    spamReasons: antiSpam.reasons,
     hashtags: result.hashtags,
     splitInto: result.splitInto,
     phrasesReviewed: newPhrases, // null unless a review ran on this post
@@ -245,7 +326,7 @@ export async function handleVote(ctx, params) {
       .run();
   }
 
-  if (value === -1) await updateSpamScore(db, params.id);
+  if (oldValue !== value) await updateSpamScore(db, params.id);
 
   const counts = await db
     .prepare(
@@ -264,55 +345,40 @@ export async function handleVote(ctx, params) {
   }, { request, env });
 }
 
-/**
- * Recompute a post's spam score. Three signals: a lopsided dislike ratio,
- * the author posting too fast, and duplicated text. Posts are never deleted,
- * only pushed down the feed.
- */
+/** Recompute behavior plus community evidence after every vote transition. */
 async function updateSpamScore(db, postId) {
   const post = await db
-    .prepare('SELECT userId, text FROM posts WHERE id = ?')
+    .prepare('SELECT userId, text, timestamp FROM posts WHERE id = ?')
     .bind(postId)
     .first();
   if (!post) return;
 
-  let score = 0;
+  const [votes, priorRows] = await Promise.all([
+    db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END) AS likes,
+           SUM(CASE WHEN value = -1 THEN 1 ELSE 0 END) AS dislikes
+         FROM likes WHERE postId = ?`
+      )
+      .bind(postId)
+      .first(),
+    db
+      .prepare(
+        `SELECT id, text, timestamp, spam_score FROM posts
+          WHERE userId = ? AND id != ? AND deleted = 0
+            AND timestamp > ? AND timestamp <= ?
+          ORDER BY timestamp DESC LIMIT 50`
+      )
+      .bind(post.userId, postId, Number(post.timestamp) - 24 * 60 * 60 * 1000,
+            Number(post.timestamp))
+      .all(),
+  ]);
 
-  const votes = await db
-    .prepare(
-      `SELECT
-         SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END) AS likes,
-         SUM(CASE WHEN value = -1 THEN 1 ELSE 0 END) AS dislikes
-       FROM likes WHERE postId = ?`
-    )
-    .bind(postId)
-    .first();
-
-  const likes = votes?.likes || 0;
-  const dislikes = votes?.dislikes || 0;
-  const total = likes + dislikes;
-  if (total >= 3) {
-    const ratio = dislikes / total;
-    if (ratio > 0.7) score += 0.5;
-    else if (ratio > 0.5) score += 0.25;
-  }
-
-  const recent = await db
-    .prepare('SELECT COUNT(*) AS c FROM posts WHERE userId = ? AND timestamp > ? AND deleted = 0')
-    .bind(post.userId, Date.now() - 10 * 60 * 1000)
-    .first();
-  if ((recent?.c || 0) > 10) score += 0.6;
-  else if ((recent?.c || 0) > 5) score += 0.3;
-
-  const dupes = await db
-    .prepare('SELECT COUNT(*) AS c FROM posts WHERE text = ? AND id != ? AND deleted = 0')
-    .bind(post.text, postId)
-    .first();
-  if ((dupes?.c || 0) > 0) score += 0.4;
-
+  const assessment = assessExistingSpam(post, priorRows.results || [], votes || {});
   await db
     .prepare('UPDATE posts SET spam_score = ? WHERE id = ?')
-    .bind(Math.min(0.95, score), postId)
+    .bind(assessment.score, postId)
     .run();
 }
 
@@ -496,7 +562,8 @@ export async function handleGlobalFeed(ctx) {
       .prepare(
         `SELECT p.*, u.username, u.avatar
            FROM posts p JOIN users u ON p.userId = u.id
-          WHERE p.deleted = 0 AND p.spam_score < 0.9
+          WHERE p.deleted = 0 AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
+            AND p.category_id != -1
           ORDER BY p.timestamp DESC LIMIT ?`
       )
       .bind(limit)
@@ -526,36 +593,26 @@ export async function handleGlobalFeed(ctx) {
   });
   const categoryScores = Object.fromEntries(ranked);
 
-  // Skip anything served in the last 5 minutes, so scrolling brings new posts
-  // without starving the feed on a later visit
-  const seenRows = await db
-    .prepare(
-      `SELECT postId FROM feed_seen
-        WHERE userId = ? AND seenAt > ?
-        ORDER BY seenAt DESC LIMIT 200`
-    )
-    .bind(user.id, now - 5 * 60 * 1000)
-    .all();
-  const seenIds = (seenRows.results || []).map((r) => r.postId);
-  const seenSet = new Set(seenIds);
-  const seenClause = seenIds.length
-    ? `AND p.id NOT IN (${seenIds.map(() => '?').join(',')})`
-    : '';
+  const recentCutoff = now - RECENT_SEEN_MS;
 
   // Pin the author's latest just-created post once so a refresh confirms that
-  // it was saved. Older authored posts remain outside the recommendation pool.
-  const latestOwnPost = await db
+  // it was saved. NOT EXISTS avoids large dynamic NOT IN parameter lists.
+  const ownPostToPin = await db
     .prepare(
       `SELECT p.*, u.username, u.avatar
          FROM posts p JOIN users u ON p.userId = u.id
-        WHERE p.userId = ? AND p.deleted = 0 AND p.timestamp > ?
+        WHERE p.userId = ? AND p.deleted = 0
+          AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
+          AND p.timestamp > ?
+          AND NOT EXISTS (
+            SELECT 1 FROM feed_seen fs
+             WHERE fs.userId = ? AND fs.postId = p.id AND fs.seenAt > ?
+          )
         ORDER BY p.timestamp DESC LIMIT 1`
     )
-    .bind(user.id, now - 15 * 60 * 1000)
+    .bind(user.id, now - 15 * 60 * 1000, user.id, recentCutoff)
     .first();
-  const ownPostToPin = latestOwnPost && !seenSet.has(latestOwnPost.id)
-    ? { ...latestOwnPost, _ownRecent: true }
-    : null;
+  if (ownPostToPin) ownPostToPin._ownRecent = true;
 
   let candidates = [];
 
@@ -565,11 +622,16 @@ export async function handleGlobalFeed(ctx) {
       .prepare(
         `SELECT p.*, u.username, u.avatar
            FROM posts p JOIN users u ON p.userId = u.id
-          WHERE p.userId != ? AND p.deleted = 0 AND p.spam_score < 0.9
-            AND p.category_id != -1 ${seenClause}
-          ORDER BY p.timestamp DESC LIMIT 200`
+          WHERE p.userId != ? AND p.deleted = 0
+            AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
+            AND p.category_id != -1
+            AND NOT EXISTS (
+              SELECT 1 FROM feed_seen fs
+               WHERE fs.userId = ? AND fs.postId = p.id AND fs.seenAt > ?
+            )
+          ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_CANDIDATES}`
       )
-      .bind(user.id, ...seenIds)
+      .bind(user.id, user.id, recentCutoff)
       .all();
 
     const perCategory = new Set();
@@ -591,38 +653,85 @@ export async function handleGlobalFeed(ctx) {
         `SELECT p.*, u.username, u.avatar
            FROM posts p JOIN users u ON p.userId = u.id
           WHERE p.userId IN (${ph}) AND p.userId != ?
-            AND p.deleted = 0 AND p.spam_score < 0.9 ${seenClause}
-          ORDER BY p.timestamp DESC LIMIT 200`
+            AND p.deleted = 0 AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
+            AND p.category_id != -1
+            AND NOT EXISTS (
+              SELECT 1 FROM feed_seen fs
+               WHERE fs.userId = ? AND fs.postId = p.id AND fs.seenAt > ?
+            )
+          ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_CANDIDATES}`
       )
-      .bind(...relevantIds, user.id, ...seenIds)
+      .bind(...relevantIds, user.id, user.id, recentCutoff)
       .all();
     candidates = rows.results || [];
   }
 
-  // Build a completion pool from every eligible account. Unseen posts from
-  // less-relevant accounts are fallback material; posts served in the last
-  // five minutes remain available only as strongly penalised repeat backfill.
-  // This keeps refresh and infinite scroll full without letting repeats outrank
-  // fresh candidates.
-  const poolRows = await db
+  // Fill relevant-account gaps with unseen posts from the whole network. This
+  // query can advance beyond the newest posts because seen rows are excluded
+  // in SQL rather than fetched into a capped in-memory list.
+  const unseenPool = await db
     .prepare(
       `SELECT p.*, u.username, u.avatar
          FROM posts p JOIN users u ON p.userId = u.id
-        WHERE p.userId != ? AND p.deleted = 0 AND p.spam_score < 0.9
-        ORDER BY p.timestamp DESC LIMIT 200`
+        WHERE p.userId != ? AND p.deleted = 0
+          AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
+          AND p.category_id != -1
+          AND NOT EXISTS (
+            SELECT 1 FROM feed_seen fs
+             WHERE fs.userId = ? AND fs.postId = p.id AND fs.seenAt > ?
+          )
+        ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_CANDIDATES}`
     )
-    .bind(user.id)
+    .bind(user.id, user.id, recentCutoff)
     .all();
+
   const candidateIds = new Set(candidates.map((p) => p.id));
-  for (const p of poolRows.results || []) {
-    if (candidates.length >= 200) break;
+  for (const p of unseenPool.results || []) {
+    if (candidates.length >= MAX_FEED_CANDIDATES) break;
     if (candidateIds.has(p.id)) continue;
-    candidates.push({
+    candidates.push({ ...p, _fallback: true });
+    candidateIds.add(p.id);
+  }
+
+  // Once all unseen content is exhausted, deliberately recycle eligible posts
+  // so a finite database still supports infinite scrolling.
+  if (candidates.length < MAX_FEED_CANDIDATES) {
+    const repeatPool = await db
+      .prepare(
+        `SELECT p.*, u.username, u.avatar
+           FROM posts p JOIN users u ON p.userId = u.id
+          WHERE p.userId != ? AND p.deleted = 0
+            AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
+            AND p.category_id != -1
+          ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_CANDIDATES}`
+      )
+      .bind(user.id)
+      .all();
+    for (const p of repeatPool.results || []) {
+      if (candidates.length >= MAX_FEED_CANDIDATES) break;
+      if (candidateIds.has(p.id)) continue;
+      candidates.push({ ...p, _fallback: true, _recentlySeen: true });
+      candidateIds.add(p.id);
+    }
+  }
+
+  // Last-resort liveness for tiny/private datasets: if this account owns every
+  // eligible post, recycle its own history rather than render an empty page.
+  if (candidates.length === 0) {
+    const emergencyRows = await db
+      .prepare(
+        `SELECT p.*, u.username, u.avatar
+           FROM posts p JOIN users u ON p.userId = u.id
+          WHERE p.deleted = 0 AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
+            AND p.category_id != -1
+          ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_CANDIDATES}`
+      )
+      .all();
+    candidates = (emergencyRows.results || []).map((p) => ({
       ...p,
       _fallback: true,
-      _recentlySeen: seenSet.has(p.id),
-    });
-    candidateIds.add(p.id);
+      _recentlySeen: true,
+    }));
   }
 
   // Passive dwell remains a mild nudge. Explicit likes and comments are
@@ -668,10 +777,10 @@ export async function handleGlobalFeed(ctx) {
     }
   }
 
-  // Relevance dominates; recency is only a tiebreaker
+  // Relevance dominates; recency is only a tiebreaker. Spam multiplies the
+  // complete result, including recency, likes, comments and dwell engagement.
   const scored = candidates.map((p) => {
     const catScore = categoryScores[p.category_id] ?? 0;
-    const spamFactor = 1 - (p.spam_score || 0);
     const ageHours = (now - p.timestamp) / 3_600_000;
     let recency;
     if (ageHours < 1) recency = 0.15;
@@ -680,21 +789,17 @@ export async function handleGlobalFeed(ctx) {
     else if (ageHours < 72) recency = 0.03;
     else recency = 0.01;
 
-    const relevance = Math.max(0.01, catScore) * spamFactor + (engagementMap[p.id] || 0);
+    const relevance = Math.max(0.01, catScore) + (engagementMap[p.id] || 0);
     const baseScore = feedCandidateScore(relevance, recency, interactionMap[p.id]);
+    const spamPenalty = spamRankMultiplier(p.spam_score);
     const fallbackFactor = p._fallback ? 0.85 : 1;
     const repeatFactor = p._recentlySeen ? 0.08 : 1;
-    return { ...p, _score: baseScore * fallbackFactor * repeatFactor };
+    return { ...p, _score: baseScore * spamPenalty * fallbackFactor * repeatFactor };
   });
 
-  // Fresh posts always precede recently served backfill. The repeat score is
-  // still retained to rank repeats sensibly against each other.
-  scored.sort((a, b) => {
-    if (Boolean(a._recentlySeen) !== Boolean(b._recentlySeen)) {
-      return a._recentlySeen ? 1 : -1;
-    }
-    return b._score - a._score;
-  });
+  // Repeat backfill is strongly penalised but can still outrank spam. Keeping
+  // one score order prevents a fresh spam post bypassing the spam multiplier.
+  scored.sort((a, b) => b._score - a._score);
 
   // Roughly 10% of slots explore categories adjacent to the user's interests
   const exploreSlots = Math.max(1, Math.floor(limit * 0.1));
@@ -752,10 +857,14 @@ export async function handleGlobalFeed(ctx) {
           `SELECT p.*, u.username, u.avatar
              FROM posts p JOIN users u ON p.userId = u.id
             WHERE p.category_id IN (${ph}) AND p.userId != ?
-              AND p.deleted = 0 AND p.spam_score < 0.9 ${seenClause}
+              AND p.deleted = 0 AND p.spam_score < ${SPAM_QUARANTINE_THRESHOLD}
+              AND NOT EXISTS (
+                SELECT 1 FROM feed_seen fs
+                 WHERE fs.userId = ? AND fs.postId = p.id AND fs.seenAt > ?
+              )
             ORDER BY p.timestamp DESC LIMIT 20`
         )
-        .bind(...simIds, user.id, ...seenIds)
+        .bind(...simIds, user.id, user.id, recentCutoff)
         .all();
       for (const p of rows.results || []) {
         if (explore.length >= exploreSlots) break;
