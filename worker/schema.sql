@@ -64,6 +64,29 @@ CREATE TABLE IF NOT EXISTS comments (
 
 CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(postId, timestamp);
 
+-- Comment likes are separate from post votes: comments support like/unlike only.
+CREATE TABLE IF NOT EXISTS comment_likes (
+  commentId TEXT,
+  userId    TEXT,
+  created   INTEGER,
+  PRIMARY KEY (commentId, userId),
+  FOREIGN KEY (commentId) REFERENCES comments(id),
+  FOREIGN KEY (userId) REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_comment_likes_user ON comment_likes(userId, created DESC);
+
+-- A sixth new post inside a rolling minute mutes posting for five minutes.
+-- Keeping this in D1 makes the mute consistent across Worker isolates.
+CREATE TABLE IF NOT EXISTS posting_mutes (
+  userId      TEXT PRIMARY KEY,
+  muted_until INTEGER,
+  created     INTEGER,
+  FOREIGN KEY (userId) REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_posting_mutes_until ON posting_mutes(muted_until);
+
 -- ---------------------------------------------------------------- follows
 CREATE TABLE IF NOT EXISTS follow_requests (
   id         TEXT PRIMARY KEY,

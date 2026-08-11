@@ -13,8 +13,10 @@ import {
 import { extractHashtags } from '../vectorizer.js';
 import { sentimentScore } from '../sentiment.js';
 import {
-  SPAM_HIDE_THRESHOLD, SPAM_QUARANTINE_THRESHOLD,
-  assessPostingSpam, assessExistingSpam, spamRankMultiplier,
+  SPAM_HIDE_THRESHOLD, SPAM_QUARANTINE_THRESHOLD, POST_MUTE_MS,
+  IDENTICAL_POST_WINDOW_MS, assessPostingSpam, assessExistingSpam,
+  findPostingRetry, isPostingRateLimited, matchingIdenticalPosts,
+  spamRankMultiplier,
 } from '../spam.js';
 
 export const MAX_POST_LENGTH = 100;
@@ -45,41 +47,159 @@ export async function handleSavePost(ctx) {
   const id = uuid();
   const timestamp = Date.now();
 
-  // Score the post before it can train categories. Repeated submissions inside
-  // 30 seconds are treated as one idempotent request; floods and repeated
-  // content are heavily penalised immediately rather than waiting for votes.
+  // Read actual inserted rows, including quarantined and deleted rows. Those
+  // rows still count toward abuse limits; otherwise soft-deleting would let an
+  // account evade both controls.
   const recentRows = await db
     .prepare(
-      `SELECT id, text, timestamp, spam_score, category_id, sentiment
-         FROM posts WHERE userId = ? AND deleted = 0 AND timestamp > ?
-        ORDER BY timestamp DESC LIMIT 50`
+      `SELECT id, text, timestamp, deleted, spam_score, category_id, sentiment
+         FROM posts WHERE userId = ? AND timestamp > ?
+        ORDER BY timestamp DESC`
     )
     .bind(user.id, timestamp - 24 * 60 * 60 * 1000)
     .all();
-  const antiSpam = assessPostingSpam(text, recentRows.results || [], timestamp);
+  const recentPosts = recentRows.results || [];
 
-  if (antiSpam.retry) {
-    const existing = antiSpam.retry;
+  // Browser retries inside 30 seconds represent the same request. Resolve this
+  // before checking the mute/rate limit so a retry never adds a strike or
+  // extends an active mute.
+  const retry = findPostingRetry(text, recentPosts, timestamp);
+  if (retry) {
+    const autoDeleted = Number(retry.deleted) === 1;
     return json({
       success: true,
       duplicate: true,
+      autoDeleted,
+      deletedCount: autoDeleted ? 0 : undefined,
+      deletedPostIds: autoDeleted ? [retry.id] : undefined,
+      moderationMessage: autoDeleted
+        ? 'This repeated post was already removed by the duplicate-post rule.'
+        : undefined,
       post: {
-        ...existing,
+        ...retry,
         userId: user.id,
         username: user.username,
         avatar: user.avatar,
-        deleted: 0,
+        deleted: autoDeleted ? 1 : 0,
         likes: 0,
         dislikes: 0,
         userVote: 0,
       },
-      id: existing.id,
-      timestamp: existing.timestamp,
-      category_id: existing.category_id,
-      sentiment: existing.sentiment,
-      spam_score: existing.spam_score || 0,
+      id: retry.id,
+      timestamp: retry.timestamp,
+      category_id: retry.category_id,
+      sentiment: retry.sentiment,
+      spam_score: retry.spam_score || 0,
     }, { request, env });
   }
+
+  const mute = await db
+    .prepare('SELECT muted_until FROM posting_mutes WHERE userId = ?')
+    .bind(user.id)
+    .first();
+  if (Number(mute?.muted_until) > timestamp) {
+    const retryAfterMs = Number(mute.muted_until) - timestamp;
+    return json({
+      error: 'Posting is muted temporarily because this account posted too quickly.',
+      code: 'POSTING_MUTED',
+      mutedUntil: Number(mute.muted_until),
+      retryAfterMs,
+    }, {
+      status: 429,
+      request,
+      env,
+      extraHeaders: { 'Retry-After': String(Math.ceil(retryAfterMs / 1000)) },
+    });
+  }
+
+  if (isPostingRateLimited(recentPosts, timestamp)) {
+    const mutedUntil = timestamp + POST_MUTE_MS;
+    await db
+      .prepare(
+        `INSERT INTO posting_mutes (userId, muted_until, created) VALUES (?, ?, ?)
+         ON CONFLICT(userId) DO UPDATE SET
+           muted_until = excluded.muted_until,
+           created = excluded.created`
+      )
+      .bind(user.id, mutedUntil, timestamp)
+      .run();
+    return json({
+      error: 'Posting muted for 5 minutes after five posts in one minute.',
+      code: 'POSTING_MUTED',
+      mutedUntil,
+      retryAfterMs: POST_MUTE_MS,
+    }, {
+      status: 429,
+      request,
+      env,
+      extraHeaders: { 'Retry-After': String(POST_MUTE_MS / 1000) },
+    });
+  }
+
+  // On the fifth normalized-identical post in five hours, persist this attempt
+  // as a tombstone and remove every still-visible match as one set. The new row
+  // deliberately bypasses the analyser, interests, hashtags and phrase model.
+  const identical = matchingIdenticalPosts(
+    text, recentPosts, timestamp, IDENTICAL_POST_WINDOW_MS
+  );
+  if (identical.length >= 4) {
+    const activeMatches = identical.filter((post) => Number(post.deleted) !== 1);
+    const statements = [
+      db
+        .prepare(
+          `INSERT INTO posts (id, userId, text, timestamp, deleted, category_id, spam_score, post_vector, sentiment)
+           VALUES (?, ?, ?, ?, 1, -1, 0.99, '{}', ?)`
+        )
+        .bind(id, user.id, text, timestamp, sentimentScore(text)),
+    ];
+    if (activeMatches.length > 0) {
+      const placeholders = activeMatches.map(() => '?').join(',');
+      statements.push(
+        db
+          .prepare(
+            `UPDATE posts SET deleted = 1, category_id = -1 WHERE id IN (${placeholders})`
+          )
+          .bind(...activeMatches.map((post) => post.id))
+      );
+    }
+    await db.batch(statements);
+
+    const deletedPostIds = [...activeMatches.map((post) => post.id), id];
+    const post = {
+      id,
+      userId: user.id,
+      username: user.username,
+      avatar: user.avatar,
+      text,
+      timestamp,
+      deleted: 1,
+      category_id: -1,
+      spam_score: 0.99,
+      sentiment: sentimentScore(text),
+      likes: 0,
+      dislikes: 0,
+      userVote: 0,
+    };
+    return json({
+      success: true,
+      autoDeleted: true,
+      deletedCount: deletedPostIds.length,
+      deletedPostIds,
+      moderationMessage: 'Five identical posts within five hours were automatically removed.',
+      post,
+      id,
+      timestamp,
+      category_id: -1,
+      spam_score: 0.99,
+      hashtags: [],
+      splitInto: null,
+      phrasesReviewed: null,
+    }, { request, env });
+  }
+
+  // Score the post before it can train categories. Medium/high-confidence spam
+  // is quarantined rather than being allowed to affect recommendations.
+  const antiSpam = assessPostingSpam(text, recentPosts, timestamp);
 
   // Medium/high-confidence spam is stored for the author to inspect, but it is
   // quarantined before it can train categories, interests, or phrase counts.
@@ -247,6 +367,36 @@ export async function handleMyPosts(ctx) {
   return json(rows.results || [], { request, env });
 }
 
+export async function handleMyComments(ctx) {
+  const { request, env, db, user } = ctx;
+  if (!user) return unauthorized(null, ctx);
+
+  const rows = await db
+    .prepare(
+      `SELECT c.id, c.postId, c.text, c.timestamp,
+              p.text AS postText, p.userId AS postAuthorId,
+              pu.username AS postAuthorUsername, pu.avatar AS postAuthorAvatar,
+              (SELECT COUNT(*) FROM comment_likes cl WHERE cl.commentId = c.id) AS likes,
+              EXISTS(
+                SELECT 1 FROM comment_likes mine
+                 WHERE mine.commentId = c.id AND mine.userId = ?
+              ) AS userLiked
+         FROM comments c
+         JOIN posts p ON p.id = c.postId AND p.deleted = 0
+         LEFT JOIN users pu ON pu.id = p.userId
+        WHERE c.userId = ?
+        ORDER BY c.timestamp DESC LIMIT 100`
+    )
+    .bind(user.id, user.id)
+    .all();
+
+  return json((rows.results || []).map((comment) => ({
+    ...comment,
+    likes: Number(comment.likes) || 0,
+    userLiked: Boolean(comment.userLiked),
+  })), { request, env });
+}
+
 export async function handleDeletePost(ctx, params) {
   const { request, env, db, user } = ctx;
   if (!user) return unauthorized(null, ctx);
@@ -386,16 +536,25 @@ async function updateSpamScore(db, postId) {
 // Comments
 // ---------------------------------------------------------------------------
 export async function handleGetComments(ctx, params) {
-  const { request, env, db } = ctx;
+  const { request, env, db, user } = ctx;
   const rows = await db
     .prepare(
-      `SELECT c.id, c.text, c.timestamp, u.id AS userId, u.username, u.avatar
+      `SELECT c.id, c.text, c.timestamp, u.id AS userId, u.username, u.avatar,
+              (SELECT COUNT(*) FROM comment_likes cl WHERE cl.commentId = c.id) AS likes,
+              EXISTS(
+                SELECT 1 FROM comment_likes mine
+                 WHERE mine.commentId = c.id AND mine.userId = ?
+              ) AS userLiked
          FROM comments c JOIN users u ON c.userId = u.id
         WHERE c.postId = ? ORDER BY c.timestamp ASC LIMIT 200`
     )
-    .bind(params.id)
+    .bind(user?.id || '', params.id)
     .all();
-  return json(rows.results || [], { request, env });
+  return json((rows.results || []).map((comment) => ({
+    ...comment,
+    likes: Number(comment.likes) || 0,
+    userLiked: Boolean(comment.userLiked),
+  })), { request, env });
 }
 
 export async function handleAddComment(ctx, params) {
@@ -410,7 +569,7 @@ export async function handleAddComment(ctx, params) {
   }
 
   const post = await db
-    .prepare('SELECT userId, category_id FROM posts WHERE id = ?')
+    .prepare('SELECT userId, category_id FROM posts WHERE id = ? AND deleted = 0')
     .bind(params.id)
     .first();
   if (!post) return notFound('Post not found', ctx);
@@ -452,7 +611,57 @@ export async function handleAddComment(ctx, params) {
       userId: user.id,
       username: user.username,
       avatar: user.avatar,
+      likes: 0,
+      userLiked: false,
     },
+  }, { request, env });
+}
+
+export async function handleCommentLike(ctx, params) {
+  const { request, env, db, user } = ctx;
+  if (!user) return unauthorized(null, ctx);
+
+  const body = await readJson(request);
+  const value = parseInt(body.value, 10);
+  if (![0, 1].includes(value)) return badRequest('Invalid comment like value', ctx);
+
+  const comment = await db
+    .prepare(
+      `SELECT c.id FROM comments c
+        JOIN posts p ON p.id = c.postId
+       WHERE c.id = ? AND p.deleted = 0`
+    )
+    .bind(params.id)
+    .first();
+  if (!comment) return notFound('Comment not found', ctx);
+
+  if (value === 1) {
+    await db
+      .prepare(
+        `INSERT OR IGNORE INTO comment_likes (commentId, userId, created)
+         VALUES (?, ?, ?)`
+      )
+      .bind(params.id, user.id, Date.now())
+      .run();
+  } else {
+    await db
+      .prepare('DELETE FROM comment_likes WHERE commentId = ? AND userId = ?')
+      .bind(params.id, user.id)
+      .run();
+  }
+
+  const state = await db
+    .prepare(
+      `SELECT COUNT(*) AS likes,
+              MAX(CASE WHEN userId = ? THEN 1 ELSE 0 END) AS userLiked
+         FROM comment_likes WHERE commentId = ?`
+    )
+    .bind(user.id, params.id)
+    .first();
+
+  return json({
+    likes: Number(state?.likes) || 0,
+    userLiked: Boolean(state?.userLiked),
   }, { request, env });
 }
 

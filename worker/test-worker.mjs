@@ -167,7 +167,8 @@ check('rejects an over-long value', sanitiseAvatar('😎😎😎😎😎😎😎
 console.log('\n6. Router dispatch');
 // Every table schema.sql creates, so stubs can present a complete schema
 const ALL_TABLES = [
-  'users', 'posts', 'likes', 'comments', 'follow_requests', 'follows',
+  'users', 'posts', 'likes', 'comments', 'comment_likes', 'posting_mutes',
+  'follow_requests', 'follows',
   'notifications', 'user_interests', 'engagement', 'feed_seen', 'hashtags',
   'post_hashtags', 'categories', 'model_meta', 'sessions',
   'token_counts', 'bigram_counts', 'phrases',
@@ -497,8 +498,12 @@ check('comment creation uses the canonical response envelope',
   commentBody.success === true && createdComment !== undefined,
   JSON.stringify(commentBody));
 check('created comment includes every renderer field',
-  createdComment && ['id', 'text', 'timestamp', 'userId', 'username', 'avatar']
-    .every((field) => createdComment[field] !== undefined),
+  createdComment && [
+    'id', 'text', 'timestamp', 'userId', 'username', 'avatar', 'likes', 'userLiked',
+  ].every((field) => createdComment[field] !== undefined),
+  JSON.stringify(createdComment));
+check('new comments begin with canonical like state',
+  createdComment?.likes === 0 && createdComment?.userLiked === false,
   JSON.stringify(createdComment));
 check('created comment text and username are defined',
   createdComment?.text === 'A real comment' && createdComment?.username === USER.username);

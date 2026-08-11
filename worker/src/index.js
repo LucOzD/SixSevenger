@@ -18,8 +18,8 @@ import {
 } from './routes/auth-routes.js';
 
 import {
-  handleSavePost, handleMyPosts, handleDeletePost, handleVote,
-  handleGetComments, handleAddComment, handleTrackEngagement,
+  handleSavePost, handleMyPosts, handleMyComments, handleDeletePost, handleVote,
+  handleGetComments, handleAddComment, handleCommentLike, handleTrackEngagement,
   handlePostDetails, handleGlobalFeed,
 } from './routes/post-routes.js';
 
@@ -37,7 +37,7 @@ import {
 // Tables schema.sql creates. /health compares against this so a partially
 // migrated database reports itself instead of failing obscurely at runtime.
 const REQUIRED_TABLES = [
-  'users', 'posts', 'likes', 'comments',
+  'users', 'posts', 'likes', 'comments', 'comment_likes', 'posting_mutes',
   'follow_requests', 'follows', 'notifications',
   'user_interests', 'engagement', 'feed_seen',
   'hashtags', 'post_hashtags',
@@ -55,10 +55,12 @@ const ROUTES = [
 
   ['POST', '/save-message',              handleSavePost],
   ['GET',  '/my-posts',                  handleMyPosts],
+  ['GET',  '/my-comments',               handleMyComments],
   ['POST', '/post/:id/delete',           handleDeletePost],
   ['POST', '/post/:id/like',             handleVote],
   ['GET',  '/post/:id/comments',         handleGetComments],
   ['POST', '/post/:id/comment',          handleAddComment],
+  ['POST', '/comment/:id/like',          handleCommentLike],
   ['GET',  '/post-details/:id',          handlePostDetails],
   ['GET',  '/global-feed',               handleGlobalFeed],
   ['POST', '/track-engagement',          handleTrackEngagement],

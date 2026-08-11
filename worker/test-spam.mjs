@@ -1,5 +1,6 @@
 import {
-  SPAM_QUARANTINE_THRESHOLD, assessPostingSpam, communitySpamSignal,
+  IDENTICAL_POST_WINDOW_MS, SPAM_QUARANTINE_THRESHOLD, assessPostingSpam,
+  communitySpamSignal, isPostingRateLimited, matchingIdenticalPosts,
   normalizeSpamText, spamRankMultiplier,
 } from './src/spam.js';
 
@@ -21,12 +22,30 @@ check('an immediate duplicate is an idempotent retry', retry.retry?.id === '1000
 const duplicate = assessPostingSpam('same post', [post('same post', 60_000)], now);
 check('a later duplicate reaches quarantine', duplicate.score >= SPAM_QUARANTINE_THRESHOLD,
   `score=${duplicate.score}`);
-const burst = assessPostingSpam('new message', [
+const burstHistory = [
   post('one', 10_000), post('two', 20_000), post('three', 30_000),
   post('four', 40_000), post('five', 50_000),
-], now);
+];
+const burst = assessPostingSpam('new message', burstHistory, now);
 check('the sixth post in two minutes is hidden as a rapid burst', burst.score >= 0.9,
   `score=${burst.score}`);
+check('the first five posts in a rolling minute are allowed',
+  !isPostingRateLimited(burstHistory.slice(0, 4), now));
+check('a sixth attempted post sees five existing rows and is rate limited',
+  isPostingRateLimited(burstHistory, now));
+const identicalHistory = [
+  post('SAME post!', 31_000), post('same POST', 60_000),
+  post('same post', 120_000), post('same post', IDENTICAL_POST_WINDOW_MS),
+  post('same post', IDENTICAL_POST_WINDOW_MS + 1),
+];
+check('identical matching normalizes case and punctuation',
+  matchingIdenticalPosts('same post', identicalHistory, now).length === 4);
+check('posts outside five hours do not count as identical',
+  !matchingIdenticalPosts('same post', identicalHistory, now)
+    .some((item) => item.id === String(IDENTICAL_POST_WINDOW_MS + 1)));
+check('the retry window takes precedence over duplicate enforcement',
+  assessPostingSpam('same post', [post('SAME POST!', 20_000), ...identicalHistory], now)
+    .retry?.id === '20000');
 
 console.log('\n2. Community evidence and ranking punishment');
 check('a few dislikes cannot classify spam', communitySpamSignal({ likes: 0, dislikes: 4 }) === 0);

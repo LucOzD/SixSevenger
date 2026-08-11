@@ -297,11 +297,28 @@ if (inputBox) {
         body: JSON.stringify({ message })
       });
       const payload = await res.json();
-      if (!res.ok || !payload.success || !payload.post) {
+      if (!res.ok) {
+        if (payload.code === 'POSTING_MUTED' && payload.mutedUntil) {
+          const seconds = Math.max(1, Math.ceil((payload.mutedUntil - Date.now()) / 1000));
+          throw new Error(`Posting is muted. Try again in ${seconds} second${seconds === 1 ? '' : 's'}.`);
+        }
         throw new Error(payload.error || 'Failed to create post.');
       }
+      if (!payload.success) throw new Error(payload.error || 'Failed to create post.');
 
-      inputBox.value = "";
+      inputBox.value = '';
+
+      if (payload.autoDeleted) {
+        const deletedIds = new Set((payload.deletedPostIds || []).map(String));
+        document.querySelectorAll('[data-post-id]').forEach((element) => {
+          if (deletedIds.has(String(element.dataset.postId))) element.remove();
+        });
+        if (document.getElementById('myPosts')) loadMyPosts();
+        alert(payload.moderationMessage || 'Repeated posts were automatically removed.');
+        return;
+      }
+
+      if (!payload.post) throw new Error('The server returned an invalid post.');
 
       const feed = document.getElementById('globalFeed');
       if (feed) {
@@ -326,6 +343,85 @@ if (inputBox) {
 
 // =========================================================
 // LOAD YOUR OWN POSTS (PROFILE PAGE)
+// =========================================================
+
+// =========================================================
+// COMMENT RENDERING + LIKES
+// =========================================================
+
+async function setCommentLike(comment, button, count) {
+  if (window.isGuest) {
+    alert('You must be logged in to like comments.');
+    return;
+  }
+
+  button.disabled = true;
+  try {
+    const res = await api(`/comment/${encodeURIComponent(comment.id)}/like`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: comment.userLiked ? 0 : 1 })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to update comment like.');
+
+    comment.likes = Number(data.likes) || 0;
+    comment.userLiked = Boolean(data.userLiked);
+    count.textContent = String(comment.likes);
+    button.classList.toggle('active', comment.userLiked);
+    button.textContent = comment.userLiked ? '♥' : '♡';
+    button.setAttribute('aria-label', comment.userLiked ? 'Unlike comment' : 'Like comment');
+  } catch (error) {
+    alert(error.message || 'Failed to update comment like.');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function createCommentElement(comment, { detail = false, highlight = false } = {}) {
+  const element = document.createElement('div');
+  element.id = detail ? `comment-${comment.id}` : '';
+  element.className = detail
+    ? `comment-item${highlight ? ' comment-highlight' : ''}`
+    : 'comment';
+
+  element.innerHTML = detail ? `
+    <div class="comment-author">
+      ${avatarHtml(comment.avatar, comment.username)}
+      <strong>${comment.username || 'Unknown'}</strong>
+    </div>
+    <div class="comment-text">${escapeHtml(comment.text)}</div>
+    <div class="comment-footer">
+      <span class="notification-item-meta">${new Date(comment.timestamp).toLocaleString()}</span>
+      <button class="comment-like-btn ${comment.userLiked ? 'active' : ''}"
+              aria-label="${comment.userLiked ? 'Unlike comment' : 'Like comment'}">
+        ${comment.userLiked ? '♥' : '♡'}
+      </button>
+      <span class="comment-like-count">${Number(comment.likes) || 0}</span>
+    </div>
+  ` : `
+    ${avatarHtml(comment.avatar, comment.username)}
+    <div class="comment-content">
+      <strong>${comment.username || 'Unknown'}</strong>
+      <div class="comment-text">${escapeHtml(comment.text)}</div>
+      <div class="comment-footer">
+        <button class="comment-like-btn ${comment.userLiked ? 'active' : ''}"
+                aria-label="${comment.userLiked ? 'Unlike comment' : 'Like comment'}">
+          ${comment.userLiked ? '♥' : '♡'}
+        </button>
+        <span class="comment-like-count">${Number(comment.likes) || 0}</span>
+      </div>
+    </div>
+  `;
+
+  const button = element.querySelector('.comment-like-btn');
+  const count = element.querySelector('.comment-like-count');
+  button.addEventListener('click', () => setCommentLike(comment, button, count));
+  return element;
+}
+
+// =========================================================
+// GLOBAL POST CARD
 // =========================================================
 
 function createPostCard(post) {
@@ -391,18 +487,10 @@ function createPostCard(post) {
     .then(comments => {
       commentCountEl.textContent = comments.length;
 
-      commentsList.innerHTML = ""; // clear
+      commentsList.innerHTML = ''; // clear
 
       if (comments.length > 0) {
-        const top = comments[0];
-        const el = document.createElement("div");
-        el.className = "comment";
-        el.innerHTML = `
-          ${avatarHtml(top.avatar, top.username)}
-          <strong>${top.username || "Unknown"}</strong>
-          <div>${escapeHtml(top.text)}</div>
-        `;
-        commentsList.appendChild(el);
+        commentsList.appendChild(createCommentElement(comments[0]));
       }
     });
 
@@ -429,18 +517,10 @@ function createPostCard(post) {
       const comments = await api(`/post/${post.id}/comments`).then(r => r.json());
       commentCountEl.textContent = comments.length;
 
-      commentsList.innerHTML = "";
+      commentsList.innerHTML = '';
 
       if (comments.length > 0) {
-        const top = comments[0];
-        const el = document.createElement("div");
-        el.className = "comment";
-        el.innerHTML = `
-          ${avatarHtml(top.avatar, top.username)}
-          <strong>${top.username || "Unknown"}</strong>
-          <div>${escapeHtml(top.text)}</div>
-        `;
-        commentsList.appendChild(el);
+        commentsList.appendChild(createCommentElement(comments[0]));
       }
 
       return;
@@ -456,15 +536,8 @@ function createPostCard(post) {
 
     const top10 = comments.slice(0, 10);
 
-    top10.forEach(c => {
-      const el = document.createElement("div");
-      el.className = "comment";
-      el.innerHTML = `
-        ${avatarHtml(c.avatar, c.username)}
-        <strong>${c.username || "Unknown"}</strong>
-        <div>${escapeHtml(c.text)}</div>
-      `;
-      commentsList.appendChild(el);
+    top10.forEach(comment => {
+      commentsList.appendChild(createCommentElement(comment));
     });
 
     // SEE MORE BUTTON
@@ -474,18 +547,10 @@ function createPostCard(post) {
       seeMore.className = "see-more-comments";
 
       seeMore.onclick = () => {
-        commentsList.innerHTML = "";
-        comments.forEach(c => {
-          const el = document.createElement("div");
-          el.className = "comment";
-          el.innerHTML = `
-            ${avatarHtml(c.avatar, c.username)}
-            <strong>${c.username || "Unknown"}</strong>
-            <div>${escapeHtml(c.text)}</div>
-          `;
-          commentsList.appendChild(el);
+        commentsList.innerHTML = '';
+        comments.forEach(comment => {
+          commentsList.appendChild(createCommentElement(comment));
         });
-        seeMore.remove();
       };
 
       commentsList.appendChild(seeMore);
@@ -524,14 +589,7 @@ function createPostCard(post) {
         throw new Error('The server returned an invalid comment. Please refresh and try again.');
       }
 
-      const el = document.createElement('div');
-      el.className = 'comment';
-      el.innerHTML = `
-        ${avatarHtml(newComment.avatar, newComment.username)}
-        <strong>${newComment.username || 'Unknown'}</strong>
-        <div>${escapeHtml(newComment.text)}</div>
-      `;
-      commentsList.appendChild(el);
+      commentsList.appendChild(createCommentElement(newComment));
 
       commentInput.value = '';
       commentCountEl.textContent = String((parseInt(commentCountEl.textContent, 10) || 0) + 1);
@@ -596,7 +654,48 @@ async function loadMyPosts() {
   });
 }
 
-if (document.getElementById("myPosts")) loadMyPosts();
+if (document.getElementById('myPosts')) loadMyPosts();
+
+async function loadMyComments() {
+  const container = document.getElementById('myComments');
+  if (!container) return;
+
+  const res = await api('/my-comments');
+  const comments = await res.json();
+  if (!res.ok) {
+    container.innerHTML = '<div class="notification-empty">Unable to load comments.</div>';
+    return;
+  }
+
+  container.innerHTML = '';
+  if (!comments.length) {
+    container.innerHTML = '<div class="notification-empty">You have not commented yet.</div>';
+    return;
+  }
+
+  comments.forEach(comment => {
+    const link = document.createElement('a');
+    const query = new URLSearchParams({
+      id: String(comment.postId),
+      highlightCommentId: String(comment.id)
+    });
+    link.href = `/post.html?${query.toString()}`;
+    link.className = 'profile-comment-card';
+    link.innerHTML = `
+      <div class="profile-comment-text">${escapeHtml(comment.text)}</div>
+      <div class="profile-comment-context">
+        On ${escapeHtml(comment.postAuthorUsername || 'Unknown')}'s post:
+        “${escapeHtml(comment.postText || '')}”
+      </div>
+      <div class="profile-comment-meta">
+        ${new Date(comment.timestamp).toLocaleString()} · ♥ ${Number(comment.likes) || 0}
+      </div>
+    `;
+    container.appendChild(link);
+  });
+}
+
+if (document.getElementById('myComments')) loadMyComments();
 
 
 // =========================================================

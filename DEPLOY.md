@@ -48,7 +48,9 @@ database_id = "a1b2c3d4-...."
 `REPLACE_WITH_YOUR_DATABASE_ID`. The deploy will fail with a binding error if
 you skip this.
 
-## Step 2 — Create the tables
+First time only — and after any update that adds tables (such as posting mutes
+or comment likes) — apply the schema. The statements are idempotent, so it is
+safe to rerun:
 
 ```
 npx wrangler d1 execute sixsevenger --file=./schema.sql --remote

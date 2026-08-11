@@ -2,6 +2,11 @@
 
 export const SPAM_HIDE_THRESHOLD = 0.90;
 export const SPAM_QUARANTINE_THRESHOLD = 0.70;
+export const POST_RATE_LIMIT = 5;
+export const POST_RATE_WINDOW_MS = 60_000;
+export const POST_MUTE_MS = 5 * 60_000;
+export const IDENTICAL_POST_WINDOW_MS = 5 * 60 * 60 * 1000;
+const RETRY_WINDOW_MS = 30_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function normalizeSpamText(text) {
@@ -32,11 +37,41 @@ function combineSignals(signals) {
     remaining * (1 - Math.max(0, Math.min(0.99, signal))), 1));
 }
 
+export function isPostingRateLimited(recentPosts = [], now = Date.now()) {
+  const count = recentPosts.filter((post) => {
+    const age = now - Number(post.timestamp);
+    return age >= 0 && age <= POST_RATE_WINDOW_MS;
+  }).length;
+  return count >= POST_RATE_LIMIT;
+}
+
+export function findPostingRetry(text, recentPosts = [], now = Date.now()) {
+  const normalized = normalizeSpamText(text);
+  return recentPosts.find((post) =>
+    normalizeSpamText(post.text) === normalized &&
+    now - Number(post.timestamp) >= 0 &&
+    now - Number(post.timestamp) <= RETRY_WINDOW_MS
+  ) || null;
+}
+
+export function matchingIdenticalPosts(
+  text,
+  recentPosts = [],
+  now = Date.now(),
+  windowMs = IDENTICAL_POST_WINDOW_MS
+) {
+  const normalized = normalizeSpamText(text);
+  return recentPosts.filter((post) =>
+    normalizeSpamText(post.text) === normalized &&
+    now - Number(post.timestamp) >= 0 &&
+    now - Number(post.timestamp) <= windowMs
+  );
+}
+
 export function assessPostingSpam(text, recentPosts = [], now = Date.now()) {
   const normalized = normalizeSpamText(text);
   const recent = recentPosts.filter((post) => now - Number(post.timestamp) <= DAY_MS);
-  const retry = recent.find((post) =>
-    normalizeSpamText(post.text) === normalized && now - Number(post.timestamp) <= 30_000);
+  const retry = findPostingRetry(text, recent, now);
   if (retry) return { score: Number(retry.spam_score) || 0, retry, reasons: ['retry'] };
 
   const signals = [];

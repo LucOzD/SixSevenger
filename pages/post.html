@@ -69,18 +69,10 @@ async function loadPostPage() {
 
   commentsList.innerHTML = '';
   comments.forEach(comment => {
-    const div = document.createElement('div');
-    div.id = `comment-${comment.id}`;
-    div.className = 'comment-item' + (String(comment.id) === highlightCommentId ? ' comment-highlight' : '');
-    div.innerHTML = `
-      <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
-        ${avatarHtml(comment.avatar, comment.username)}
-        <strong>${comment.username || 'Unknown'}</strong>
-      </div>
-      <div>${escapeHtml(comment.text)}</div>
-      <div class="notification-item-meta" style="margin-top:8px;">${new Date(comment.timestamp).toLocaleString()}</div>
-    `;
-    commentsList.appendChild(div);
+    commentsList.appendChild(createCommentElement(comment, {
+      detail: true,
+      highlight: String(comment.id) === highlightCommentId
+    }));
   });
 
   if (highlightCommentId) {
