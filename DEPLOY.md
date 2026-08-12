@@ -468,7 +468,9 @@ the final slot in place of an organic post; the displaced post remains eligible
 for the next page. Minimum similarity and frequency settings guide preference
 and rotation without leaving a scheduled ad slot empty when inventory exists.
 Guests receive an untracked, non-personalized active fallback. Feed traversal
-ends when unseen content is exhausted instead of recycling the same posts.
+continues through successive ranked windows; after the full available pool has
+been shown, a new cycle begins instead of stopping or immediately repeating the
+same small group of posts.
 
 Ad images remain ordinary Pages assets—put them under `pages/ad-assets/` and
 enter a path such as `/ad-assets/controller.png`. This keeps ads on the same

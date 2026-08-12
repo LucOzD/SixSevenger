@@ -149,6 +149,8 @@ export function corsHeaders(request, env) {
     // Authorization must be listed or the preflight rejects the session header,
     // which is how auth travels when the site and API are on different sites
     'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization',
+    'Access-Control-Expose-Headers':
+      'X-Feed-Next-Offset, X-Feed-Cycle-End, X-Feed-Cycle-Reset',
     'Access-Control-Allow-Credentials': 'true',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',

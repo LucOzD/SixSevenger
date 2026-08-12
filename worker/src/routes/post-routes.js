@@ -919,15 +919,18 @@ export async function handleGlobalFeed(ctx) {
   const { request, env, db, user } = ctx;
   const url = new URL(request.url);
   const limit = Math.min(50, parseInt(url.searchParams.get('limit')) || 20);
-  const guestOffset = Math.max(0, Math.min(
-    MAX_FEED_SCAN_CANDIDATES,
-    parseInt(url.searchParams.get('offset'), 10) || 0
-  ));
+  const guestOffset = Math.max(
+    0,
+    Math.min(10_000_000, parseInt(url.searchParams.get('offset'), 10) || 0)
+  );
+  const guestWindowStart = Math.floor(guestOffset / MAX_FEED_SCAN_CANDIDATES) *
+    MAX_FEED_SCAN_CANDIDATES;
+  const guestWindowOffset = guestOffset - guestWindowStart;
   const now = Date.now();
 
-  // Guests have no persistent feed identity, so the browser advances an
-  // offset through this stable popularity ranking. Once these candidates are
-  // exhausted the feed stops instead of cycling back to the first page.
+  // Guests traverse successive popularity-ranked windows. The extra SQL row
+  // tells the browser whether another window exists, so a complete cycle can
+  // restart without either stopping or getting trapped on the first few posts.
   if (!user) {
     const rows = await db
       .prepare(
@@ -936,28 +939,45 @@ export async function handleGlobalFeed(ctx) {
            ${POPULARITY_JOINS_SQL}
           WHERE ${FEED_ELIGIBILITY_SQL}
           ORDER BY ${SPAM_AWARE_POPULARITY_ORDER_SQL} DESC, p.timestamp DESC
-          LIMIT ${MAX_FEED_SCAN_CANDIDATES}`
+          LIMIT ${MAX_FEED_SCAN_CANDIDATES + 1} OFFSET ${guestWindowStart}`
       )
       .all();
-    const candidates = filterFeedSpam(rows.results || []);
+    const rawRows = rows.results || [];
+    const hasMoreWindows = rawRows.length > MAX_FEED_SCAN_CANDIDATES;
+    const candidates = filterFeedSpam(rawRows.slice(0, MAX_FEED_SCAN_CANDIDATES));
     const interactions = await loadFeedInteractions(db, candidates);
-    const rankedPosts = candidates
+    const rankedWindow = candidates
       .map((post) => ({
         ...post,
         _score: scoreFeedPost(post, now, 0.01, interactions[post.id] || {}),
       }))
-      .sort((left, right) => right._score - left._score)
-      .slice(guestOffset, guestOffset + limit);
+      .sort((left, right) => right._score - left._score);
+    const pagePosts = rankedWindow.slice(guestWindowOffset, guestWindowOffset + limit);
 
     // An ad occupies the final slot of a full page rather than increasing the
     // page size. The displaced organic post remains first on the next page.
-    const ad = rankedPosts.length >= limit
+    const ad = pagePosts.length >= limit
       ? await selectPersonalizedAd(db, null, {}, null, now)
       : null;
     const postLimit = ad ? Math.max(0, limit - 1) : limit;
-    const enrichedPosts = await enrichPosts(db, rankedPosts.slice(0, postLimit), null);
+    const servedPosts = pagePosts.slice(0, postLimit);
+    const exhaustedWindow = guestWindowOffset + servedPosts.length >= rankedWindow.length;
+    const nextWindowOffset = guestWindowStart + MAX_FEED_SCAN_CANDIDATES;
+    const nextOffset = exhaustedWindow
+      ? nextWindowOffset
+      : guestWindowStart + guestWindowOffset + servedPosts.length;
+    const cycleEnd = exhaustedWindow && !hasMoreWindows;
+
+    const enrichedPosts = await enrichPosts(db, servedPosts, null);
     if (ad) enrichedPosts.push(ad);
-    return json(enrichedPosts, { request, env });
+    return json(enrichedPosts, {
+      request,
+      env,
+      extraHeaders: {
+        'X-Feed-Next-Offset': String(cycleEnd ? 0 : nextOffset),
+        'X-Feed-Cycle-End': cycleEnd ? '1' : '0',
+      },
+    });
   }
 
   const interests = await getUserInterests(db, user.id);
@@ -1006,6 +1026,7 @@ export async function handleGlobalFeed(ctx) {
   if (ownPostToPin) ownPostToPin._ownRecent = true;
 
   let candidates = [];
+  let recycledFeedCycle = false;
 
   if (relevantIds === null) {
     // Cold start: spread across categories so first interactions are informative
@@ -1106,8 +1127,27 @@ export async function handleGlobalFeed(ctx) {
     candidateIds.add(p.id);
   }
 
-  // Do not backfill from feed_seen once unseen candidates are exhausted. A
-  // finite content pool should end rather than repeat forever.
+  // After every unseen post has been traversed, begin a new cycle from the
+  // least-recently-served posts. Updating seenAt for each served page rotates
+  // the whole pool instead of repeating the same high-ranked handful forever.
+  if (candidates.length === 0) {
+    const recycledRows = await db
+      .prepare(
+        `SELECT p.*, u.username, u.avatar
+           FROM posts p
+           JOIN users u ON p.userId = u.id
+           LEFT JOIN feed_seen fs ON fs.userId = ? AND fs.postId = p.id
+          WHERE p.userId != ? AND ${FEED_ELIGIBILITY_SQL}
+          ORDER BY COALESCE(fs.seenAt, 0) ASC, p.timestamp DESC
+          LIMIT ${MAX_FEED_SCAN_CANDIDATES}`
+      )
+      .bind(user.id, user.id)
+      .all();
+    candidates = filterFeedSpam(recycledRows.results || [])
+      .slice(0, MAX_FEED_CANDIDATES)
+      .map((post) => ({ ...post, _fallback: true }));
+    recycledFeedCycle = candidates.length > 0;
+  }
 
   // Passive dwell remains a mild nudge. Explicit likes and comments are
   // queried separately and receive substantially more weight below.
@@ -1328,7 +1368,11 @@ export async function handleGlobalFeed(ctx) {
 
   const enrichedPosts = await enrichPosts(db, servedPosts, user.id);
   if (ad) enrichedPosts.push(ad);
-  return json(enrichedPosts, { request, env });
+  return json(enrichedPosts, {
+    request,
+    env,
+    extraHeaders: recycledFeedCycle ? { 'X-Feed-Cycle-Reset': '1' } : {},
+  });
 }
 
 /** Attach like/dislike counts and the caller's own vote. */

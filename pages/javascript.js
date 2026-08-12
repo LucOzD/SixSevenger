@@ -800,24 +800,12 @@ if (document.getElementById('myComments')) loadMyComments();
 
 const globalLimit = 20;
 let globalLoading = false;
-let globalFeedExhausted = false;
 let globalFeedOffset = 0;
 const renderedFeedPostIds = new Set();
 
-function updateFeedEndState(loading) {
-  if (!loading) return;
-  if (globalFeedExhausted) {
-    loading.textContent = 'You’re all caught up.';
-    loading.style.display = 'block';
-  } else {
-    loading.textContent = 'Loading...';
-    loading.style.display = 'none';
-  }
-}
-
 async function loadGlobalPosts() {
   const feed = document.getElementById("globalFeed");
-  if (!feed || globalLoading || globalFeedExhausted) return 0;
+  if (!feed || globalLoading) return 0;
 
   globalLoading = true;
   const loading = document.getElementById('loading');
@@ -826,18 +814,35 @@ async function loadGlobalPosts() {
     loading.style.display = 'block';
   }
   try {
-    const query = new URLSearchParams({
-      limit: String(globalLimit),
-      offset: String(globalFeedOffset)
-    });
-    const res = await api(`/global-feed?${query.toString()}`);
-    if (!res.ok) throw new Error('Failed to load posts.');
-    const items = await res.json();
-    if (!Array.isArray(items)) throw new Error('Invalid feed response.');
+    let items = [];
+    let cycleEnd = false;
+    let cycleReset = false;
 
-    const receivedPosts = items.filter((item) => item.kind !== 'ad');
-    globalFeedOffset += receivedPosts.length;
-    if (items.length < globalLimit) globalFeedExhausted = true;
+    // A guest ranking window can contain rows removed by the final behavioral
+    // spam filter. Skip an empty window immediately instead of making scrolling
+    // appear to stop while more ranked windows still exist.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const query = new URLSearchParams({
+        limit: String(globalLimit),
+        offset: String(globalFeedOffset)
+      });
+      const res = await api(`/global-feed?${query.toString()}`);
+      if (!res.ok) throw new Error('Failed to load posts.');
+      items = await res.json();
+      if (!Array.isArray(items)) throw new Error('Invalid feed response.');
+
+      const nextOffset = Number(res.headers.get('X-Feed-Next-Offset'));
+      if (Number.isFinite(nextOffset) && nextOffset >= 0) {
+        globalFeedOffset = nextOffset;
+      }
+      cycleEnd = res.headers.get('X-Feed-Cycle-End') === '1';
+      cycleReset = res.headers.get('X-Feed-Cycle-Reset') === '1';
+      if (items.length > 0 || cycleEnd) break;
+    }
+
+    // Logged-in feeds announce when least-recently-seen rotation starts so
+    // posts from the completed cycle may be rendered again in the new cycle.
+    if (cycleReset) renderedFeedPostIds.clear();
 
     let appended = 0;
     for (const item of items) {
@@ -865,23 +870,27 @@ async function loadGlobalPosts() {
       feed.appendChild(createPostCard(item));
       appended++;
     }
+
+    // Guests restart only after every ranked SQL window has been traversed.
+    // Clearing after this page allows the next cycle without duplicating posts
+    // inside the cycle that just completed.
+    if (cycleEnd) renderedFeedPostIds.clear();
     return appended;
   } catch (error) {
     console.error(error);
     return 0;
   } finally {
+    if (loading) loading.style.display = 'none';
     globalLoading = false;
-    updateFeedEndState(loading);
   }
 }
 
 async function fillFeedViewport() {
-  // A short first page may not create a scrollbar, so no scroll event would
-  // ever request the next page. Stop as soon as the finite feed is exhausted.
+  // A short page may not create a scrollbar, so fetch a few more ranked pages
+  // immediately while preserving the same continuous cycle behavior.
   for (let attempt = 0; attempt < 4; attempt++) {
     const added = await loadGlobalPosts();
-    if (added === 0 || globalFeedExhausted ||
-        document.body.offsetHeight > window.innerHeight + 300) break;
+    if (added === 0 || document.body.offsetHeight > window.innerHeight + 300) break;
   }
 }
 
@@ -889,8 +898,7 @@ if (document.getElementById("globalFeed")) {
   fillFeedViewport();
 
   window.addEventListener("scroll", () => {
-    if (!globalFeedExhausted &&
-        window.innerHeight + window.scrollY >= document.body.offsetHeight - 500) {
+    if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 500) {
       loadGlobalPosts();
     }
   });
