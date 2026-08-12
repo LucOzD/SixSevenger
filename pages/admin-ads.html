@@ -35,7 +35,7 @@
 </nav>
 <div class="container" style="max-width:1000px;">
   <h1>Personalized Ads</h1>
-  <p>Ads are shown only when their keyword vector is similar enough to a logged-in user’s interests.</p>
+  <p>After every 20 organic posts, the most relevant currently active ad is shown. Similarity thresholds and frequency settings guide selection without leaving the slot empty.</p>
   <div class="ad-admin-grid">
     <form id="adForm" class="ad-panel">
       <h2 id="formTitle">Create ad</h2>
@@ -130,6 +130,14 @@ function editAd(ad) {
   scrollTo({ top: 0, behavior: 'smooth' });
 }
 
+function adStatus(ad) {
+  const now = Date.now();
+  if (!ad.active) return { label: 'PAUSED', live: false };
+  if (ad.starts_at && Number(ad.starts_at) > now) return { label: 'SCHEDULED', live: false };
+  if (ad.ends_at && Number(ad.ends_at) <= now) return { label: 'EXPIRED', live: false };
+  return { label: 'ACTIVE', live: true };
+}
+
 function renderAds() {
   const list = document.getElementById('adsList');
   list.replaceChildren();
@@ -145,8 +153,9 @@ function renderAds() {
     const title = document.createElement('strong');
     title.textContent = `${ad.emoji || '📣'} ${ad.title}`;
     const status = document.createElement('span');
-    status.className = `admin-ad-status${ad.active ? ' live' : ''}`;
-    status.textContent = ad.active ? 'ACTIVE' : 'PAUSED';
+    const state = adStatus(ad);
+    status.className = `admin-ad-status${state.live ? ' live' : ''}`;
+    status.textContent = state.label;
     top.append(title, status);
     const body = document.createElement('div');
     body.textContent = ad.body;

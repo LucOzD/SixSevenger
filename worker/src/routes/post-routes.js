@@ -934,7 +934,12 @@ export async function handleGlobalFeed(ctx) {
       }))
       .sort((left, right) => right._score - left._score)
       .slice(0, limit);
-    return json(await enrichPosts(db, rankedPosts, null), { request, env });
+    const enrichedPosts = await enrichPosts(db, rankedPosts, null);
+    if (enrichedPosts.length > 0) {
+      const ad = await selectPersonalizedAd(db, null, {}, null, now);
+      if (ad) enrichedPosts.push(ad);
+    }
+    return json(enrichedPosts, { request, env });
   }
 
   const interests = await getUserInterests(db, user.id);
@@ -1332,11 +1337,14 @@ export async function handleGlobalFeed(ctx) {
   }
 
   const enrichedPosts = await enrichPosts(db, servedPosts, user.id);
-  if (enrichedPosts.length >= 4) {
+  if (enrichedPosts.length > 0) {
     const ad = await selectPersonalizedAd(
       db, user.id, interests, analyser.topology, now
     );
-    if (ad) enrichedPosts.splice(Math.min(7, enrichedPosts.length), 0, ad);
+    // The frontend owns cross-request cadence and places this candidate only
+    // after 20 organic cards. Keeping it last avoids a misleading fixed index
+    // when a short feed batch is returned.
+    if (ad) enrichedPosts.push(ad);
   }
   return json(enrichedPosts, { request, env });
 }

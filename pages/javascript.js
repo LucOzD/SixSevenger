@@ -643,7 +643,7 @@ function createAdCard(ad) {
   const card = document.createElement('article');
   card.className = 'sponsored-ad';
   card.dataset.adId = String(ad.id);
-  card.dataset.deliveryId = String(ad.deliveryId);
+  if (ad.deliveryId) card.dataset.deliveryId = String(ad.deliveryId);
 
   const badge = document.createElement('div');
   badge.className = 'sponsored-ad-badge';
@@ -682,17 +682,19 @@ function createAdCard(ad) {
   cta.target = '_blank';
   cta.rel = 'noopener noreferrer sponsored';
   cta.textContent = ad.cta_label;
-  cta.addEventListener('click', () => {
-    api(`/ads/${encodeURIComponent(ad.id)}/click`, {
-      method: 'POST',
-      keepalive: true,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ deliveryId: ad.deliveryId })
-    }).catch(() => {});
-  });
+  if (ad.deliveryId) {
+    cta.addEventListener('click', () => {
+      api(`/ads/${encodeURIComponent(ad.id)}/click`, {
+        method: 'POST',
+        keepalive: true,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deliveryId: ad.deliveryId })
+      }).catch(() => {});
+    });
+  }
   card.appendChild(cta);
 
-  adImpressionObserver.observe(card);
+  if (ad.deliveryId) adImpressionObserver.observe(card);
   return card;
 }
 
@@ -797,7 +799,18 @@ if (document.getElementById('myComments')) loadMyComments();
 // =========================================================
 
 const globalLimit = 20;
+const AD_POST_INTERVAL = 20;
 let globalLoading = false;
+let organicPostsSinceAd = 0;
+let pendingFeedAd = null;
+
+function appendPendingFeedAd(feed) {
+  if (!pendingFeedAd || organicPostsSinceAd < AD_POST_INTERVAL) return false;
+  feed.appendChild(createAdCard(pendingFeedAd));
+  pendingFeedAd = null;
+  organicPostsSinceAd = 0;
+  return true;
+}
 
 async function loadGlobalPosts() {
   const feed = document.getElementById("globalFeed");
@@ -815,8 +828,10 @@ async function loadGlobalPosts() {
     let appended = 0;
     for (const item of items) {
       if (item.kind === 'ad') {
-        feed.appendChild(createAdCard(item));
-        appended++;
+        // Retain the oldest unshown candidate so short batches still add up to
+        // exactly 20 organic posts before the sponsored card appears.
+        if (!pendingFeedAd) pendingFeedAd = item;
+        if (appendPendingFeedAd(feed)) appended++;
         continue;
       }
       const post = item;
@@ -832,7 +847,9 @@ async function loadGlobalPosts() {
         continue;
       }
       feed.appendChild(createPostCard(post));
+      organicPostsSinceAd++;
       appended++;
+      if (appendPendingFeedAd(feed)) appended++;
     }
     return appended;
   } catch (error) {

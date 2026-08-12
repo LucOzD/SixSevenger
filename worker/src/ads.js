@@ -64,12 +64,16 @@ export function buildUserInterestVector(interests, topology) {
   return vector;
 }
 
-/** Rank eligible ads and enforce each ad's own minimum similarity. */
+/**
+ * Rank ads by relevance without making similarity a display kill-switch.
+ * `meetsThreshold` remains the strongest preference, but a below-threshold ad
+ * is a valid fallback so an active campaign can maintain the requested cadence.
+ */
 export function rankAdsForUser(rows, interests, topology) {
   const userVector = buildUserInterestVector(interests, topology);
-  if (Object.keys(userVector).length === 0) return [];
-
+  const hasInterestVector = Object.keys(userVector).length > 0;
   const ranked = [];
+
   for (const row of rows || []) {
     let adVector;
     try {
@@ -77,10 +81,21 @@ export function rankAdsForUser(rows, interests, topology) {
     } catch {
       continue;
     }
-    const similarity = cosineSimilarity(userVector, adVector);
+    const similarity = hasInterestVector ? cosineSimilarity(userVector, adVector) : 0;
+    if (!Number.isFinite(similarity)) continue;
     const threshold = Number(row.min_similarity ?? DEFAULT_AD_MIN_SIMILARITY);
-    if (!Number.isFinite(similarity) || similarity < threshold) continue;
-    ranked.push({ ...row, similarity });
+    ranked.push({
+      ...row,
+      similarity,
+      meetsThreshold: hasInterestVector && similarity >= threshold,
+    });
   }
-  return ranked.sort((left, right) => right.similarity - left.similarity);
+
+  return ranked.sort((left, right) =>
+    Number(right.meetsThreshold) - Number(left.meetsThreshold) ||
+    right.similarity - left.similarity ||
+    Number(left.recent_impressions || 0) - Number(right.recent_impressions || 0) ||
+    Number(left.last_impression || 0) - Number(right.last_impression || 0) ||
+    Number(right.updated_at || 0) - Number(left.updated_at || 0)
+  );
 }

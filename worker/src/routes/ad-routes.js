@@ -6,7 +6,7 @@ import { requireAdmin } from './misc-routes.js';
 import {
   DEFAULT_AD_FREQUENCY_CAP, DEFAULT_AD_FREQUENCY_WINDOW_MS,
   DEFAULT_AD_MIN_INTERVAL_MS, DEFAULT_AD_MIN_SIMILARITY,
-  buildAdVector, buildUserInterestVector, isSafeAdImagePath, isSafeAdUrl,
+  buildAdVector, isSafeAdImagePath, isSafeAdUrl,
   normaliseAdKeywords, rankAdsForUser,
 } from '../ads.js';
 
@@ -158,27 +158,36 @@ export async function handleAdminSaveAd(ctx, params = {}) {
 }
 
 export async function selectPersonalizedAd(db, userId, interests, topology, now = Date.now()) {
-  if (!userId || Object.keys(buildUserInterestVector(interests, topology)).length === 0) {
-    return null;
-  }
+  const actorId = userId || '';
 
+  // Scheduling is hard, but similarity and frequency controls are preferences:
+  // if every campaign is below threshold or capped, the most relevant active
+  // ad still fills the fixed feed cadence instead of leaving a blank slot.
   const rows = await db.prepare(
-    `SELECT a.* FROM ads a
+    `SELECT a.*,
+            (SELECT COUNT(*) FROM ad_deliveries d
+              WHERE d.ad_id = a.id AND d.user_id = ?
+                AND d.impression_at > ? - a.frequency_window_ms) AS recent_impressions,
+            COALESCE((SELECT MAX(d.impression_at) FROM ad_deliveries d
+                       WHERE d.ad_id = a.id AND d.user_id = ?), 0) AS last_impression
+       FROM ads a
       WHERE a.active = 1
         AND (a.starts_at IS NULL OR a.starts_at <= ?)
         AND (a.ends_at IS NULL OR a.ends_at > ?)
-        AND (SELECT COUNT(*) FROM ad_deliveries d
-              WHERE d.ad_id = a.id AND d.user_id = ?
-                AND d.selected_at > ? - a.frequency_window_ms) < a.frequency_cap
-        AND COALESCE((SELECT MAX(d.selected_at) FROM ad_deliveries d
-                       WHERE d.ad_id = a.id AND d.user_id = ?), 0)
-            <= ? - a.min_interval_ms
-      ORDER BY a.updated_at DESC LIMIT 100`
-  ).bind(now, now, userId, now, userId, now).all();
+      ORDER BY a.updated_at DESC LIMIT 500`
+  ).bind(actorId, now, actorId, now, now).all();
 
   const ranked = rankAdsForUser(rows.results || [], interests, topology);
-  const ad = ranked[0];
+  const withinFrequencyControls = ranked.filter((ad) =>
+    Number(ad.recent_impressions || 0) < Number(ad.frequency_cap) &&
+    Number(ad.last_impression || 0) <= now - Number(ad.min_interval_ms || 0)
+  );
+  const ad = withinFrequencyControls[0] || ranked[0];
   if (!ad) return null;
+
+  // Guests receive the same cadence with a non-personalized fallback, but no
+  // persistent tracking identity is created for them.
+  if (!userId) return publicAd(ad, null);
 
   const deliveryId = uuid();
   await db.prepare(
