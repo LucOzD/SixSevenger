@@ -29,6 +29,7 @@ const HASHTAG_INTEREST_WEIGHT = 0.05;
 // read of the top pairs plus a full rewrite of the phrase table each time.
 const PHRASE_REVIEW_EVERY = 20;
 const MAX_FEED_CANDIDATES = 80;
+const MAX_POPULAR_CANDIDATES = 20;
 const MAX_FEED_SCAN_CANDIDATES = MAX_FEED_CANDIDATES * 3;
 const RECENT_SEEN_MS = 5 * 60 * 1000;
 
@@ -55,6 +56,32 @@ const FEED_ELIGIBILITY_SQL = `
                                        AND anchor.timestamp + ${IDENTICAL_POST_WINDOW_MS}
        ) >= 5
   )`;
+
+// Popularity candidate windows must account for spam before LIMIT. Otherwise a
+// bot can manufacture enough reactions to occupy the entire SQL window even
+// though the final (1 - spam)^4 multiplier would rank it below clean content.
+const POPULARITY_JOINS_SQL = `
+  LEFT JOIN (
+    SELECT postId,
+           SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END) AS likes,
+           SUM(CASE WHEN value = -1 THEN 1 ELSE 0 END) AS dislikes
+      FROM likes GROUP BY postId
+  ) community_votes ON community_votes.postId = p.id
+  LEFT JOIN (
+    SELECT postId, COUNT(*) AS comments FROM comments GROUP BY postId
+  ) community_comments ON community_comments.postId = p.id`;
+
+// This is a SQL-safe approximation of the bounded interaction component used
+// by scoreFeedPost. Exact tanh scoring and recency are still applied in JS.
+const SPAM_AWARE_POPULARITY_ORDER_SQL = `
+  MAX(0.0001,
+      0.006 + 0.35 * MIN(1.0, MAX(-1.0,
+        (COALESCE(community_votes.likes, 0) +
+         COALESCE(community_comments.comments, 0) * 2 -
+         COALESCE(community_votes.dislikes, 0) * 1.5) / 5.0
+      ))) *
+  (1.0 - p.spam_score) * (1.0 - p.spam_score) *
+  (1.0 - p.spam_score) * (1.0 - p.spam_score)`;
 
 // ---------------------------------------------------------------------------
 // Create a post
@@ -501,7 +528,7 @@ export async function handleVote(ctx, params) {
   if (![1, -1, 0].includes(value)) return badRequest('Invalid vote value', ctx);
 
   const post = await db
-    .prepare('SELECT id, userId, category_id FROM posts WHERE id = ?')
+    .prepare('SELECT id, userId, category_id FROM posts WHERE id = ? AND deleted = 0')
     .bind(params.id)
     .first();
   if (!post) return notFound('Post not found', ctx);
@@ -622,7 +649,9 @@ export async function handleGetComments(ctx, params) {
                 SELECT 1 FROM comment_likes mine
                  WHERE mine.commentId = c.id AND mine.userId = ?
               ) AS userLiked
-         FROM comments c JOIN users u ON c.userId = u.id
+         FROM comments c
+         JOIN users u ON c.userId = u.id
+         JOIN posts p ON p.id = c.postId AND p.deleted = 0
         WHERE c.postId = ? ORDER BY c.timestamp ASC LIMIT 200`
     )
     .bind(user?.id || '', params.id)
@@ -836,25 +865,75 @@ export async function handlePostDetails(ctx, params) {
 // ---------------------------------------------------------------------------
 // The feed
 // ---------------------------------------------------------------------------
+function feedRecencyValue(timestamp, now) {
+  const ageHours = Math.max(0, now - Number(timestamp)) / 3_600_000;
+  if (ageHours < 1) return 0.15;
+  if (ageHours < 6) return 0.10;
+  if (ageHours < 24) return 0.06;
+  if (ageHours < 72) return 0.03;
+  return 0.01;
+}
+
+async function loadFeedInteractions(db, posts) {
+  if (posts.length === 0) return {};
+  const ids = posts.map((post) => post.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await db
+    .prepare(
+      `SELECT p.id AS postId,
+              (SELECT COUNT(*) FROM likes l WHERE l.postId = p.id AND l.value = 1) AS likes,
+              (SELECT COUNT(*) FROM likes l WHERE l.postId = p.id AND l.value = -1) AS dislikes,
+              (SELECT COUNT(*) FROM comments c WHERE c.postId = p.id) AS comments
+         FROM posts p WHERE p.id IN (${placeholders})`
+    )
+    .bind(...ids)
+    .all();
+  return Object.fromEntries((rows.results || []).map((row) => [row.postId, {
+    likes: Number(row.likes) || 0,
+    dislikes: Number(row.dislikes) || 0,
+    comments: Number(row.comments) || 0,
+  }]));
+}
+
+function scoreFeedPost(post, now, relevance, interactions, extraFactor = 1) {
+  const base = feedCandidateScore(
+    relevance,
+    feedRecencyValue(post.timestamp, now),
+    interactions
+  );
+  // Spam is applied last, so manufactured likes/comments cannot rescue a bot.
+  return base * spamRankMultiplier(post.spam_score) * extraFactor;
+}
+
 export async function handleGlobalFeed(ctx) {
   const { request, env, db, user } = ctx;
   const url = new URL(request.url);
   const limit = Math.min(50, parseInt(url.searchParams.get('limit')) || 20);
   const now = Date.now();
 
-  // Guests get a simple recent feed — there is no profile to personalise with
+  // Guests have no personal profile, so their default feed is driven by
+  // community likes/comments with recency only breaking close scores.
   if (!user) {
     const rows = await db
       .prepare(
         `SELECT p.*, u.username, u.avatar
            FROM posts p JOIN users u ON p.userId = u.id
+           ${POPULARITY_JOINS_SQL}
           WHERE ${FEED_ELIGIBILITY_SQL}
-          ORDER BY p.timestamp DESC LIMIT ?`
+          ORDER BY ${SPAM_AWARE_POPULARITY_ORDER_SQL} DESC, p.timestamp DESC
+          LIMIT ${MAX_FEED_SCAN_CANDIDATES}`
       )
-      .bind(limit)
       .all();
-    const safePosts = filterFeedSpam(rows.results || []).slice(0, limit);
-    return json(await enrichPosts(db, safePosts, null), { request, env });
+    const candidates = filterFeedSpam(rows.results || []).slice(0, MAX_FEED_CANDIDATES);
+    const interactions = await loadFeedInteractions(db, candidates);
+    const rankedPosts = candidates
+      .map((post) => ({
+        ...post,
+        _score: scoreFeedPost(post, now, 0.01, interactions[post.id] || {}),
+      }))
+      .sort((left, right) => right._score - left._score)
+      .slice(0, limit);
+    return json(await enrichPosts(db, rankedPosts, null), { request, env });
   }
 
   const interests = await getUserInterests(db, user.id);
@@ -949,6 +1028,34 @@ export async function handleGlobalFeed(ctx) {
     candidates = filterFeedSpam(rows.results || []).slice(0, MAX_FEED_CANDIDATES);
   }
 
+  // Reserve part of the candidate set for proven community favorites. This
+  // lets older liked/commented posts compete with the newest SQL window.
+  candidates = candidates.slice(0, MAX_FEED_CANDIDATES - MAX_POPULAR_CANDIDATES);
+  const candidateIds = new Set(candidates.map((post) => post.id));
+  const popularRows = await db
+    .prepare(
+      `SELECT p.*, u.username, u.avatar
+         FROM posts p JOIN users u ON p.userId = u.id
+         ${POPULARITY_JOINS_SQL}
+        WHERE p.userId != ? AND ${FEED_ELIGIBILITY_SQL}
+          AND NOT EXISTS (
+            SELECT 1 FROM feed_seen fs
+             WHERE fs.userId = ? AND fs.postId = p.id AND fs.seenAt > ?
+          )
+        ORDER BY ${SPAM_AWARE_POPULARITY_ORDER_SQL} DESC, p.timestamp DESC
+        LIMIT ${MAX_FEED_SCAN_CANDIDATES}`
+    )
+    .bind(user.id, user.id, recentCutoff)
+    .all();
+  let popularAdded = 0;
+  for (const post of filterFeedSpam(popularRows.results || [])) {
+    if (popularAdded >= MAX_POPULAR_CANDIDATES) break;
+    if (candidateIds.has(post.id)) continue;
+    candidates.push({ ...post, _popular: true });
+    candidateIds.add(post.id);
+    popularAdded++;
+  }
+
   // Fill relevant-account gaps with unseen posts from the whole network. This
   // query can advance beyond the newest posts because seen rows are excluded
   // in SQL rather than fetched into a capped in-memory list.
@@ -966,7 +1073,6 @@ export async function handleGlobalFeed(ctx) {
     .bind(user.id, user.id, recentCutoff)
     .all();
 
-  const candidateIds = new Set(candidates.map((p) => p.id));
   for (const p of filterFeedSpam(unseenPool.results || [])) {
     if (candidates.length >= MAX_FEED_CANDIDATES) break;
     if (candidateIds.has(p.id)) continue;
@@ -1061,20 +1167,19 @@ export async function handleGlobalFeed(ctx) {
   // complete result, including recency, likes, comments and dwell engagement.
   const scored = candidates.map((p) => {
     const catScore = categoryScores[p.category_id] ?? 0;
-    const ageHours = (now - p.timestamp) / 3_600_000;
-    let recency;
-    if (ageHours < 1) recency = 0.15;
-    else if (ageHours < 6) recency = 0.10;
-    else if (ageHours < 24) recency = 0.06;
-    else if (ageHours < 72) recency = 0.03;
-    else recency = 0.01;
-
     const relevance = Math.max(0.01, catScore) + (engagementMap[p.id] || 0);
-    const baseScore = feedCandidateScore(relevance, recency, interactionMap[p.id]);
-    const spamPenalty = spamRankMultiplier(p.spam_score);
     const fallbackFactor = p._fallback ? 0.85 : 1;
     const repeatFactor = p._recentlySeen ? 0.08 : 1;
-    return { ...p, _score: baseScore * spamPenalty * fallbackFactor * repeatFactor };
+    return {
+      ...p,
+      _score: scoreFeedPost(
+        p,
+        now,
+        relevance,
+        interactionMap[p.id] || {},
+        fallbackFactor * repeatFactor
+      ),
+    };
   });
 
   // Repeat backfill is strongly penalised but can still outrank spam. Keeping
@@ -1146,11 +1251,24 @@ export async function handleGlobalFeed(ctx) {
         )
         .bind(...simIds, user.id, user.id, recentCutoff)
         .all();
-      for (const p of filterFeedSpam(rows.results || [])) {
-        if (explore.length >= exploreSlots) break;
-        if (have.has(p.id)) continue;
-        explore.push({ ...p, _explore: true });
-      }
+      const explorationCandidates = filterFeedSpam(rows.results || [])
+        .filter((post) => !have.has(post.id));
+      const explorationInteractions = await loadFeedInteractions(db, explorationCandidates);
+      const rankedExploration = explorationCandidates
+        .map((post) => ({
+          ...post,
+          _explore: true,
+          _score: scoreFeedPost(
+            post,
+            now,
+            Math.max(0.01, categoryScores[post.category_id] ?? 0.01),
+            explorationInteractions[post.id] || {},
+            0.9
+          ),
+        }))
+        .sort((left, right) => right._score - left._score)
+        .slice(0, exploreSlots);
+      explore.push(...rankedExploration);
     }
   }
 
@@ -1247,7 +1365,7 @@ async function enrichPosts(db, posts, userId) {
   }
 
   return posts.map((p) => {
-    const { _score, _fallback, _recentlySeen, _explore, _ownRecent, ...rest } = p;
+    const { _score, _fallback, _recentlySeen, _explore, _ownRecent, _popular, ...rest } = p;
     return {
       ...rest,
       likes: counts[p.id]?.likes || 0,

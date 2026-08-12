@@ -730,3 +730,11 @@ button.submit-btn:hover {
   color: #687386;
   font-size: 13px;
 }
+
+.post-timestamp {
+  display: block;
+  margin-top: 6px;
+  color: #7a8494;
+  font-size: 12px;
+  line-height: 1.3;
+}

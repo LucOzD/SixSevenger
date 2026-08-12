@@ -185,7 +185,7 @@ export async function handleAdminUserInterests(ctx, params) {
       .bind(params.id)
       .all(),
     db
-      .prepare('SELECT id, text, category_id, sentiment FROM posts WHERE userId = ? AND deleted = 0 ORDER BY timestamp DESC LIMIT 100')
+      .prepare('SELECT id, text, timestamp, category_id, sentiment FROM posts WHERE userId = ? AND deleted = 0 ORDER BY timestamp DESC LIMIT 100')
       .bind(params.id)
       .all(),
   ]);
@@ -203,5 +203,146 @@ export async function handleAdminUserInterests(ctx, params) {
     user: target,
     interests,
     posts: postRows.results || [],
+  }, { request, env });
+}
+
+
+/** Soft-delete one post as moderation while retaining its abuse history. */
+export async function handleAdminDeletePost(ctx, params) {
+  const denied = requireAdmin(ctx);
+  if (denied) return denied;
+
+  const { request, env, db } = ctx;
+  const post = await db.prepare('SELECT id FROM posts WHERE id = ?').bind(params.id).first();
+  if (!post) return notFound('Post not found', ctx);
+
+  await db.batch([
+    db
+      .prepare('UPDATE posts SET deleted = 1, category_id = -1, spam_score = 0.99 WHERE id = ?')
+      .bind(params.id),
+    db.prepare('DELETE FROM post_hashtags WHERE postId = ?').bind(params.id),
+    db.prepare('DELETE FROM feed_seen WHERE postId = ?').bind(params.id),
+    db
+      .prepare(
+        `DELETE FROM notifications
+          WHERE CASE WHEN json_valid(payload)
+                     THEN json_extract(payload, '$.postId') END = ?`
+      )
+      .bind(params.id),
+    db.prepare(
+      `UPDATE hashtags SET post_count = (
+         SELECT COUNT(*) FROM post_hashtags ph
+         JOIN posts p ON p.id = ph.postId
+          WHERE ph.tag = hashtags.tag AND p.deleted = 0
+       )`
+    ),
+    db.prepare('DELETE FROM hashtags WHERE post_count <= 0'),
+  ]);
+
+  return json({ success: true, postId: params.id }, { request, env });
+}
+
+/** Permanently remove an account and every directly related row. */
+export async function handleAdminDeleteUser(ctx, params) {
+  const denied = requireAdmin(ctx);
+  if (denied) return denied;
+
+  const { request, env, db, user } = ctx;
+  const target = await db
+    .prepare(
+      `SELECT u.id, u.username,
+              (SELECT COUNT(*) FROM posts p WHERE p.userId = u.id) AS postCount
+         FROM users u WHERE u.id = ?`
+    )
+    .bind(params.id)
+    .first();
+  if (!target) return notFound('User not found', ctx);
+  if (target.id === user.id || target.username === 'admin') {
+    return forbidden('The admin account cannot be deleted', ctx);
+  }
+
+  const id = target.id;
+  await db.batch([
+    db
+      .prepare(
+        `DELETE FROM notifications
+          WHERE userId = ?
+             OR CASE WHEN json_valid(payload)
+                     THEN json_extract(payload, '$.fromUserId') END = ?
+             OR CASE WHEN json_valid(payload)
+                     THEN json_extract(payload, '$.postId') END IN
+                (SELECT id FROM posts WHERE userId = ?)
+             OR CASE WHEN json_valid(payload)
+                     THEN json_extract(payload, '$.commentId') END IN
+                (SELECT c.id FROM comments c
+                  WHERE c.userId = ?
+                     OR c.postId IN (SELECT id FROM posts WHERE userId = ?))`
+      )
+      .bind(id, id, id, id, id),
+    db
+      .prepare(
+        `DELETE FROM comment_likes
+          WHERE userId = ?
+             OR commentId IN (
+               SELECT c.id FROM comments c
+                WHERE c.userId = ?
+                   OR c.postId IN (SELECT id FROM posts WHERE userId = ?)
+             )`
+      )
+      .bind(id, id, id),
+    db
+      .prepare(
+        `DELETE FROM likes
+          WHERE userId = ? OR postId IN (SELECT id FROM posts WHERE userId = ?)`
+      )
+      .bind(id, id),
+    db
+      .prepare(
+        `DELETE FROM engagement
+          WHERE userId = ? OR postId IN (SELECT id FROM posts WHERE userId = ?)`
+      )
+      .bind(id, id),
+    db
+      .prepare(
+        `DELETE FROM feed_seen
+          WHERE userId = ? OR postId IN (SELECT id FROM posts WHERE userId = ?)`
+      )
+      .bind(id, id),
+    db
+      .prepare('DELETE FROM post_hashtags WHERE postId IN (SELECT id FROM posts WHERE userId = ?)')
+      .bind(id),
+    db
+      .prepare(
+        `DELETE FROM comments
+          WHERE userId = ? OR postId IN (SELECT id FROM posts WHERE userId = ?)`
+      )
+      .bind(id, id),
+    db
+      .prepare('DELETE FROM follow_requests WHERE fromUserId = ? OR toUserId = ?')
+      .bind(id, id),
+    db
+      .prepare('DELETE FROM follows WHERE followerId = ? OR followingId = ?')
+      .bind(id, id),
+    db.prepare('DELETE FROM user_interests WHERE userId = ?').bind(id),
+    db.prepare('DELETE FROM sessions WHERE userId = ?').bind(id),
+    db.prepare('DELETE FROM posting_mutes WHERE userId = ?').bind(id),
+    db.prepare('DELETE FROM posting_violations WHERE userId = ?').bind(id),
+    db.prepare('DELETE FROM posts WHERE userId = ?').bind(id),
+    db.prepare('DELETE FROM users WHERE id = ?').bind(id),
+    db.prepare(
+      `UPDATE hashtags SET post_count = (
+         SELECT COUNT(*) FROM post_hashtags ph
+         JOIN posts p ON p.id = ph.postId
+          WHERE ph.tag = hashtags.tag AND p.deleted = 0
+       )`
+    ),
+    db.prepare('DELETE FROM hashtags WHERE post_count <= 0'),
+  ]);
+
+  return json({
+    success: true,
+    userId: id,
+    username: target.username,
+    deletedPosts: Number(target.postCount) || 0,
   }, { request, env });
 }

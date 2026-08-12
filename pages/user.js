@@ -98,6 +98,7 @@ async function loadUser() {
     card.className = "msg-card";
     card.innerHTML = `
       <div class="msg-text">${escapeHtml(post.text)}</div>
+      ${formatPostTimestamp(post.timestamp)}
     `;
     postsDiv.appendChild(card);
   });

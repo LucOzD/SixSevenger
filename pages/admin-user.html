@@ -15,8 +15,13 @@
     .interest-card .words { color: #666; font-size: 13px; margin-top: 4px; }
     .interest-card .cat-id { font-weight: 600; }
     .section-title { margin-top: 24px; margin-bottom: 12px; font-size: 18px; }
-    .post-item { background: white; padding: 10px 14px; border-radius: 6px; margin-bottom: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.08); display: flex; justify-content: space-between; align-items: center; }
+    .post-item { background: white; padding: 10px 14px; border-radius: 6px; margin-bottom: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.08); display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    .post-item-main { flex: 1; min-width: 0; }
+    .post-item-meta { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
     .post-item .cat-badge { background: #e9ecef; padding: 2px 8px; border-radius: 12px; font-size: 12px; }
+    .danger-zone { margin: 18px 0; padding: 14px; border: 1px solid #f1aeb5; background: #fff5f5; border-radius: 8px; }
+    .danger-btn, .admin-delete-post-btn { padding: 7px 11px; border: 0; border-radius: 5px; color: white; background: #dc3545; cursor: pointer; }
+    .danger-btn:disabled, .admin-delete-post-btn:disabled { opacity: .55; cursor: wait; }
     .back-link { color: #4a8af4; text-decoration: none; font-size: 14px; }
     .back-link:hover { text-decoration: underline; }
   </style>
@@ -41,6 +46,12 @@
     <h1 id="pageTitle">User Interests</h1>
   </div>
 
+  <div id="dangerZone" class="danger-zone" hidden>
+    <strong>Danger zone</strong>
+    <p>Delete this account and all associated posts, comments, reactions, sessions, and social data.</p>
+    <button id="deleteAccountBtn" class="danger-btn">Delete account and all posts</button>
+  </div>
+
   <h3 class="section-title">Category Interests</h3>
   <div id="interestsList">Loading...</div>
 
@@ -59,6 +70,13 @@ async function load() {
   const data = await res.json();
 
   document.getElementById('pageTitle').textContent = (data.user.username || 'Unknown') + ' — Interests';
+
+  const dangerZone = document.getElementById('dangerZone');
+  const deleteAccountBtn = document.getElementById('deleteAccountBtn');
+  if (data.user.username !== 'admin') {
+    dangerZone.hidden = false;
+    deleteAccountBtn.onclick = () => deleteAccount(data.user, deleteAccountBtn);
+  }
 
   const interestsList = document.getElementById('interestsList');
   interestsList.innerHTML = '';
@@ -90,12 +108,67 @@ async function load() {
       item.className = 'post-item';
       const catLabel = p.category_id === -1 ? 'uncategorised' : 'cat ' + p.category_id;
       item.innerHTML = `
-        <span>${escapeHtml(p.text)}</span>
-        <span class="cat-badge">${catLabel}</span>
+        <div class="post-item-main">
+          <div>${escapeHtml(p.text)}</div>
+          <div class="post-item-meta">
+            <span class="cat-badge">${catLabel}</span>
+            ${formatTimestamp(p.timestamp)}
+          </div>
+        </div>
+        <button class="admin-delete-post-btn">Delete post</button>
       `;
+      item.querySelector('.admin-delete-post-btn').onclick = (event) =>
+        deletePost(p, item, event.currentTarget);
       postsList.appendChild(item);
     });
   }
+}
+
+async function deletePost(post, item, button) {
+  if (!confirm(`Delete this post?\n\n${post.text}`)) return;
+  button.disabled = true;
+  try {
+    const response = await api(`/admin/post/${encodeURIComponent(post.id)}/delete`, {
+      method: 'POST'
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || 'Failed to delete post.');
+    }
+    item.remove();
+  } catch (error) {
+    button.disabled = false;
+    alert(error.message || 'Failed to delete post.');
+  }
+}
+
+async function deleteAccount(user, button) {
+  const confirmation = prompt(
+    `This permanently deletes ${user.username} and all of their data. Type the username to confirm:`
+  );
+  if (confirmation !== user.username) return;
+  button.disabled = true;
+  try {
+    const response = await api(`/admin/user/${encodeURIComponent(user.id)}/delete`, {
+      method: 'POST'
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || 'Failed to delete account.');
+    }
+    location.href = '/admin.html';
+  } catch (error) {
+    button.disabled = false;
+    alert(error.message || 'Failed to delete account.');
+  }
+}
+
+function formatTimestamp(value) {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp)) return '';
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '';
+  return `<time class="post-timestamp" datetime="${date.toISOString()}">${date.toLocaleString()}</time>`;
 }
 
 function escapeHtml(str) {

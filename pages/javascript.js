@@ -424,6 +424,14 @@ function createCommentElement(comment, { detail = false, highlight = false } = {
 // GLOBAL POST CARD
 // =========================================================
 
+function formatPostTimestamp(value) {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp)) return '';
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '';
+  return `<time class="post-timestamp" datetime="${date.toISOString()}">${date.toLocaleString()}</time>`;
+}
+
 function createPostCard(post) {
   const card = document.createElement('div');
   card.className = 'global-post';
@@ -438,6 +446,7 @@ function createPostCard(post) {
     </div>
 
     <div class="global-post-text">${formatPostText(post.text)}</div>
+    ${formatPostTimestamp(post.timestamp)}
 
     <div class="post-actions">
       <button class="like-btn ${post.userVote === 1 ? 'active' : ''}">👍</button>
@@ -627,6 +636,7 @@ async function loadMyPosts() {
     
     card.innerHTML = `
       <div class="msg-text">${escapeHtml(post.text)}${statusLabel}</div>
+      ${formatPostTimestamp(post.timestamp)}
       <div style="display:flex; gap:10px; margin-top:10px;">
         ${isDeleted ? '<span style="color:#999; font-size:12px;">Post deleted</span>' : `<button class="delete-post-btn" data-post-id="${post.id}" style="padding:4px 8px; background:#ff4444; color:white; border:none; border-radius:4px; cursor:pointer;">Delete</button>`}
       </div>

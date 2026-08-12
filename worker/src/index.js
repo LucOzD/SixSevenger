@@ -32,6 +32,7 @@ import {
 import {
   handleHashtag, handleAdminUsers, handleAdminCategories,
   handleAdminUserInterests, handleAdminPhrases,
+  handleAdminDeletePost, handleAdminDeleteUser,
 } from './routes/misc-routes.js';
 
 // Tables schema.sql creates. /health compares against this so a partially
@@ -83,6 +84,8 @@ const ROUTES = [
   ['GET',  '/admin/categories',          handleAdminCategories],
   ['GET',  '/admin/phrases',             handleAdminPhrases],
   ['GET',  '/admin/user/:id/interests',  handleAdminUserInterests],
+  ['POST', '/admin/post/:id/delete',     handleAdminDeletePost],
+  ['POST', '/admin/user/:id/delete',     handleAdminDeleteUser],
 ];
 
 export default {

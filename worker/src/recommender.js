@@ -421,8 +421,8 @@ export const SIGNAL_WEIGHTS = {
 export const POST_INTEREST_WEIGHT = 0.15;
 
 export const FEED_SCORE_WEIGHTS = {
-  relevance: 0.75,
-  interactions: 0.20,
+  relevance: 0.60,
+  interactions: 0.35,
   recency: 0.05,
 };
 

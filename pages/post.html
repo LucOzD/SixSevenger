@@ -52,6 +52,7 @@ async function loadPostPage() {
       <div class="global-post-username">${post.username || 'Unknown'}</div>
     </div>
     <div class="global-post-text">${escapeHtml(post.text)}</div>
+    ${formatPostTimestamp(post.timestamp)}
     <div class="post-actions" style="gap:12px; margin-top:12px;">
       <span>👍 ${post.likes || 0}</span>
       <span>👎 ${post.dislikes || 0}</span>
