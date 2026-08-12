@@ -491,8 +491,10 @@ check('latest unseen authored post is pinned first', firstFeed[0]?.id === ownRec
 check('internal own-post marker is not exposed', firstFeed[0]?._ownRecent === undefined);
 check('first feed load records served posts', firstSeenCount === 20,
   `recorded ${firstSeenCount}`);
-check('immediate refresh backfills to a full page', refreshedFeed.length === 20,
+check('refresh returns only the remaining unseen posts', refreshedFeed.length === 3,
   `got ${refreshedFeed.length}`);
+check('refresh does not recycle posts from the first page',
+  refreshedFeed.every((postItem) => !firstFeed.some((first) => first.id === postItem.id)));
 check('refresh response contains no duplicate IDs',
   new Set(refreshedFeed.map((postItem) => postItem.id)).size === refreshedFeed.length);
 

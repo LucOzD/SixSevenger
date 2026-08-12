@@ -799,74 +799,89 @@ if (document.getElementById('myComments')) loadMyComments();
 // =========================================================
 
 const globalLimit = 20;
-const AD_POST_INTERVAL = 20;
 let globalLoading = false;
-let organicPostsSinceAd = 0;
-let pendingFeedAd = null;
+let globalFeedExhausted = false;
+let globalFeedOffset = 0;
+const renderedFeedPostIds = new Set();
 
-function appendPendingFeedAd(feed) {
-  if (!pendingFeedAd || organicPostsSinceAd < AD_POST_INTERVAL) return false;
-  feed.appendChild(createAdCard(pendingFeedAd));
-  pendingFeedAd = null;
-  organicPostsSinceAd = 0;
-  return true;
+function updateFeedEndState(loading) {
+  if (!loading) return;
+  if (globalFeedExhausted) {
+    loading.textContent = 'You’re all caught up.';
+    loading.style.display = 'block';
+  } else {
+    loading.textContent = 'Loading...';
+    loading.style.display = 'none';
+  }
 }
 
 async function loadGlobalPosts() {
   const feed = document.getElementById("globalFeed");
-  if (!feed || globalLoading) return 0;
+  if (!feed || globalLoading || globalFeedExhausted) return 0;
 
   globalLoading = true;
   const loading = document.getElementById('loading');
-  if (loading) loading.style.display = 'block';
+  if (loading) {
+    loading.textContent = 'Loading...';
+    loading.style.display = 'block';
+  }
   try {
-    const res = await api(`/global-feed?limit=${globalLimit}`);
+    const query = new URLSearchParams({
+      limit: String(globalLimit),
+      offset: String(globalFeedOffset)
+    });
+    const res = await api(`/global-feed?${query.toString()}`);
     if (!res.ok) throw new Error('Failed to load posts.');
     const items = await res.json();
     if (!Array.isArray(items)) throw new Error('Invalid feed response.');
 
+    const receivedPosts = items.filter((item) => item.kind !== 'ad');
+    globalFeedOffset += receivedPosts.length;
+    if (items.length < globalLimit) globalFeedExhausted = true;
+
     let appended = 0;
     for (const item of items) {
       if (item.kind === 'ad') {
-        // Retain the oldest unshown candidate so short batches still add up to
-        // exactly 20 organic posts before the sponsored card appears.
-        if (!pendingFeedAd) pendingFeedAd = item;
-        if (appendPendingFeedAd(feed)) appended++;
+        // The Worker reserves this normal feed slot, so rendering the response
+        // in order makes the ad the 20th card rather than a 21st extra card.
+        feed.appendChild(createAdCard(item));
+        appended++;
         continue;
       }
-      const post = item;
-      // The optimistic card created after posting is the only duplicate to
-      // suppress. Once the finite post pool is exhausted, repeated cards are
-      // intentional so scrolling can continue indefinitely.
+
+      const postId = String(item.id);
+      if (renderedFeedPostIds.has(postId)) continue;
+
+      // A newly-created post may already be present as an optimistic card.
       const optimistic = [...feed.children].find((child) =>
-        child.dataset.optimistic === 'true' &&
-        child.dataset.postId === String(post.id)
+        child.dataset.optimistic === 'true' && child.dataset.postId === postId
       );
+      renderedFeedPostIds.add(postId);
       if (optimistic) {
         delete optimistic.dataset.optimistic;
         continue;
       }
-      feed.appendChild(createPostCard(post));
-      organicPostsSinceAd++;
+
+      feed.appendChild(createPostCard(item));
       appended++;
-      if (appendPendingFeedAd(feed)) appended++;
     }
     return appended;
   } catch (error) {
     console.error(error);
     return 0;
   } finally {
-    if (loading) loading.style.display = 'none';
     globalLoading = false;
+    updateFeedEndState(loading);
   }
 }
 
 async function fillFeedViewport() {
   // A short first page may not create a scrollbar, so no scroll event would
-  // ever request the next page. Fill a few batches immediately when needed.
+  // ever request the next page. Stop as soon as the finite feed is exhausted.
   for (let attempt = 0; attempt < 4; attempt++) {
     const added = await loadGlobalPosts();
-    if (added === 0 || document.body.offsetHeight > window.innerHeight + 300) break;
+    if (added === 0 || globalFeedExhausted ||
+        document.body.offsetHeight > window.innerHeight + 300) break;
   }
 }
 
@@ -874,7 +889,8 @@ if (document.getElementById("globalFeed")) {
   fillFeedViewport();
 
   window.addEventListener("scroll", () => {
-    if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 500) {
+    if (!globalFeedExhausted &&
+        window.innerHeight + window.scrollY >= document.body.offsetHeight - 500) {
       loadGlobalPosts();
     }
   });

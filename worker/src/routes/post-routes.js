@@ -32,7 +32,6 @@ const PHRASE_REVIEW_EVERY = 20;
 const MAX_FEED_CANDIDATES = 80;
 const MAX_POPULAR_CANDIDATES = 20;
 const MAX_FEED_SCAN_CANDIDATES = MAX_FEED_CANDIDATES * 3;
-const RECENT_SEEN_MS = 5 * 60 * 1000;
 
 // Reject known spam before LIMIT is applied, so a legacy flood cannot occupy
 // the whole candidate window and hide clean posts below it. The nested window
@@ -877,23 +876,33 @@ function feedRecencyValue(timestamp, now) {
 
 async function loadFeedInteractions(db, posts) {
   if (posts.length === 0) return {};
-  const ids = posts.map((post) => post.id);
-  const placeholders = ids.map(() => '?').join(',');
-  const rows = await db
-    .prepare(
-      `SELECT p.id AS postId,
-              (SELECT COUNT(*) FROM likes l WHERE l.postId = p.id AND l.value = 1) AS likes,
-              (SELECT COUNT(*) FROM likes l WHERE l.postId = p.id AND l.value = -1) AS dislikes,
-              (SELECT COUNT(*) FROM comments c WHERE c.postId = p.id) AS comments
-         FROM posts p WHERE p.id IN (${placeholders})`
-    )
-    .bind(...ids)
-    .all();
-  return Object.fromEntries((rows.results || []).map((row) => [row.postId, {
-    likes: Number(row.likes) || 0,
-    dislikes: Number(row.dislikes) || 0,
-    comments: Number(row.comments) || 0,
-  }]));
+  const interactions = {};
+
+  // Keep each IN clause within the same conservative D1 binding budget used
+  // by personalized candidate selection while allowing a longer guest cursor.
+  for (let start = 0; start < posts.length; start += MAX_FEED_CANDIDATES) {
+    const ids = posts.slice(start, start + MAX_FEED_CANDIDATES).map((post) => post.id);
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await db
+      .prepare(
+        `SELECT p.id AS postId,
+                (SELECT COUNT(*) FROM likes l WHERE l.postId = p.id AND l.value = 1) AS likes,
+                (SELECT COUNT(*) FROM likes l WHERE l.postId = p.id AND l.value = -1) AS dislikes,
+                (SELECT COUNT(*) FROM comments c WHERE c.postId = p.id) AS comments
+           FROM posts p WHERE p.id IN (${placeholders})`
+      )
+      .bind(...ids)
+      .all();
+    for (const row of rows.results || []) {
+      interactions[row.postId] = {
+        likes: Number(row.likes) || 0,
+        dislikes: Number(row.dislikes) || 0,
+        comments: Number(row.comments) || 0,
+      };
+    }
+  }
+
+  return interactions;
 }
 
 function scoreFeedPost(post, now, relevance, interactions, extraFactor = 1) {
@@ -910,10 +919,15 @@ export async function handleGlobalFeed(ctx) {
   const { request, env, db, user } = ctx;
   const url = new URL(request.url);
   const limit = Math.min(50, parseInt(url.searchParams.get('limit')) || 20);
+  const guestOffset = Math.max(0, Math.min(
+    MAX_FEED_SCAN_CANDIDATES,
+    parseInt(url.searchParams.get('offset'), 10) || 0
+  ));
   const now = Date.now();
 
-  // Guests have no personal profile, so their default feed is driven by
-  // community likes/comments with recency only breaking close scores.
+  // Guests have no persistent feed identity, so the browser advances an
+  // offset through this stable popularity ranking. Once these candidates are
+  // exhausted the feed stops instead of cycling back to the first page.
   if (!user) {
     const rows = await db
       .prepare(
@@ -925,7 +939,7 @@ export async function handleGlobalFeed(ctx) {
           LIMIT ${MAX_FEED_SCAN_CANDIDATES}`
       )
       .all();
-    const candidates = filterFeedSpam(rows.results || []).slice(0, MAX_FEED_CANDIDATES);
+    const candidates = filterFeedSpam(rows.results || []);
     const interactions = await loadFeedInteractions(db, candidates);
     const rankedPosts = candidates
       .map((post) => ({
@@ -933,12 +947,16 @@ export async function handleGlobalFeed(ctx) {
         _score: scoreFeedPost(post, now, 0.01, interactions[post.id] || {}),
       }))
       .sort((left, right) => right._score - left._score)
-      .slice(0, limit);
-    const enrichedPosts = await enrichPosts(db, rankedPosts, null);
-    if (enrichedPosts.length > 0) {
-      const ad = await selectPersonalizedAd(db, null, {}, null, now);
-      if (ad) enrichedPosts.push(ad);
-    }
+      .slice(guestOffset, guestOffset + limit);
+
+    // An ad occupies the final slot of a full page rather than increasing the
+    // page size. The displaced organic post remains first on the next page.
+    const ad = rankedPosts.length >= limit
+      ? await selectPersonalizedAd(db, null, {}, null, now)
+      : null;
+    const postLimit = ad ? Math.max(0, limit - 1) : limit;
+    const enrichedPosts = await enrichPosts(db, rankedPosts.slice(0, postLimit), null);
+    if (ad) enrichedPosts.push(ad);
     return json(enrichedPosts, { request, env });
   }
 
@@ -964,7 +982,9 @@ export async function handleGlobalFeed(ctx) {
   });
   const categoryScores = Object.fromEntries(ranked);
 
-  const recentCutoff = now - RECENT_SEEN_MS;
+  // A served post stays seen for this account. New posts continue to enter the
+  // feed, but exhausting the current pool no longer unlocks an endless cycle.
+  const recentCutoff = 0;
 
   // Pin the author's latest just-created post once so a refresh confirms that
   // it was saved. NOT EXISTS avoids large dynamic NOT IN parameter lists.
@@ -1086,45 +1106,8 @@ export async function handleGlobalFeed(ctx) {
     candidateIds.add(p.id);
   }
 
-  // Once all unseen content is exhausted, deliberately recycle eligible posts
-  // so a finite database still supports infinite scrolling.
-  if (candidates.length < MAX_FEED_CANDIDATES) {
-    const repeatPool = await db
-      .prepare(
-        `SELECT p.*, u.username, u.avatar
-           FROM posts p JOIN users u ON p.userId = u.id
-          WHERE p.userId != ? AND ${FEED_ELIGIBILITY_SQL}
-          ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_SCAN_CANDIDATES}`
-      )
-      .bind(user.id)
-      .all();
-    for (const p of filterFeedSpam(repeatPool.results || [])) {
-      if (candidates.length >= MAX_FEED_CANDIDATES) break;
-      if (candidateIds.has(p.id)) continue;
-      candidates.push({ ...p, _fallback: true, _recentlySeen: true });
-      candidateIds.add(p.id);
-    }
-  }
-
-  // Last-resort liveness for tiny/private datasets: if this account owns every
-  // eligible post, recycle its own history rather than render an empty page.
-  if (candidates.length === 0) {
-    const emergencyRows = await db
-      .prepare(
-        `SELECT p.*, u.username, u.avatar
-           FROM posts p JOIN users u ON p.userId = u.id
-          WHERE ${FEED_ELIGIBILITY_SQL}
-          ORDER BY p.timestamp DESC LIMIT ${MAX_FEED_SCAN_CANDIDATES}`
-      )
-      .all();
-    candidates = filterFeedSpam(emergencyRows.results || [])
-      .slice(0, MAX_FEED_CANDIDATES)
-      .map((p) => ({
-      ...p,
-      _fallback: true,
-      _recentlySeen: true,
-    }));
-  }
+  // Do not backfill from feed_seen once unseen candidates are exhausted. A
+  // finite content pool should end rather than repeat forever.
 
   // Passive dwell remains a mild nudge. Explicit likes and comments are
   // queried separately and receive substantially more weight below.
@@ -1175,7 +1158,6 @@ export async function handleGlobalFeed(ctx) {
     const catScore = categoryScores[p.category_id] ?? 0;
     const relevance = Math.max(0.01, catScore) + (engagementMap[p.id] || 0);
     const fallbackFactor = p._fallback ? 0.85 : 1;
-    const repeatFactor = p._recentlySeen ? 0.08 : 1;
     return {
       ...p,
       _score: scoreFeedPost(
@@ -1183,13 +1165,13 @@ export async function handleGlobalFeed(ctx) {
         now,
         relevance,
         interactionMap[p.id] || {},
-        fallbackFactor * repeatFactor
+        fallbackFactor
       ),
     };
   });
 
-  // Repeat backfill is strongly penalised but can still outrank spam. Keeping
-  // one score order prevents a fresh spam post bypassing the spam multiplier.
+  // Keep one score order so a fresh spam post cannot bypass the spam
+  // multiplier while candidate sources are combined.
   scored.sort((a, b) => b._score - a._score);
 
   // Roughly 10% of slots explore categories adjacent to the user's interests
@@ -1319,10 +1301,18 @@ export async function handleGlobalFeed(ctx) {
     finalPosts.unshift(ownPostToPin);
   }
 
-  // Fail closed even if a future candidate path forgets the SQL guard.
-  const servedPosts = filterFeedSpam(finalPosts).slice(0, limit);
+  // Fail closed even if a future candidate path forgets the SQL guard. An ad
+  // replaces the final organic slot only when a complete page is available;
+  // short final pages contain only their remaining posts.
+  const eligiblePosts = filterFeedSpam(finalPosts);
+  const ad = eligiblePosts.length >= limit
+    ? await selectPersonalizedAd(db, user.id, interests, analyser.topology, now)
+    : null;
+  const postLimit = ad ? Math.max(0, limit - 1) : limit;
+  const servedPosts = eligiblePosts.slice(0, postLimit);
 
-  // Remember what was served
+  // Remember only the organic posts that were actually served. A post displaced
+  // by an ad remains unseen and becomes eligible for the next page.
   if (servedPosts.length > 0) {
     await db.batch(
       servedPosts.map((p) =>
@@ -1337,15 +1327,7 @@ export async function handleGlobalFeed(ctx) {
   }
 
   const enrichedPosts = await enrichPosts(db, servedPosts, user.id);
-  if (enrichedPosts.length > 0) {
-    const ad = await selectPersonalizedAd(
-      db, user.id, interests, analyser.topology, now
-    );
-    // The frontend owns cross-request cadence and places this candidate only
-    // after 20 organic cards. Keeping it last avoids a misleading fixed index
-    // when a short feed batch is returned.
-    if (ad) enrichedPosts.push(ad);
-  }
+  if (ad) enrichedPosts.push(ad);
   return json(enrichedPosts, { request, env });
 }
 
@@ -1381,7 +1363,7 @@ async function enrichPosts(db, posts, userId) {
   }
 
   return posts.map((p) => {
-    const { _score, _fallback, _recentlySeen, _explore, _ownRecent, _popular, ...rest } = p;
+    const { _score, _fallback, _explore, _ownRecent, _popular, ...rest } = p;
     return {
       ...rest,
       likes: counts[p.id]?.likes || 0,
