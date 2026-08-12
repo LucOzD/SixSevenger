@@ -112,7 +112,7 @@ export async function handleHashtag(ctx, params) {
 // ---------------------------------------------------------------------------
 // Admin. Gated on the reserved "admin" username, matching the Express version.
 // ---------------------------------------------------------------------------
-function requireAdmin(ctx) {
+export function requireAdmin(ctx) {
   const { user } = ctx;
   if (!user || user.username !== 'admin') return forbidden('Admin access required', ctx);
   return null;
@@ -325,6 +325,7 @@ export async function handleAdminDeleteUser(ctx, params) {
       .bind(id, id),
     db.prepare('DELETE FROM user_interests WHERE userId = ?').bind(id),
     db.prepare('DELETE FROM sessions WHERE userId = ?').bind(id),
+    db.prepare('DELETE FROM ad_deliveries WHERE user_id = ?').bind(id),
     db.prepare('DELETE FROM posting_mutes WHERE userId = ?').bind(id),
     db.prepare('DELETE FROM posting_violations WHERE userId = ?').bind(id),
     db.prepare('DELETE FROM posts WHERE userId = ?').bind(id),

@@ -35,6 +35,10 @@ import {
   handleAdminDeletePost, handleAdminDeleteUser,
 } from './routes/misc-routes.js';
 
+import {
+  handleAdminAds, handleAdminSaveAd, handleAdImpression, handleAdClick,
+} from './routes/ad-routes.js';
+
 // Tables schema.sql creates. /health compares against this so a partially
 // migrated database reports itself instead of failing obscurely at runtime.
 const REQUIRED_TABLES = [
@@ -44,6 +48,7 @@ const REQUIRED_TABLES = [
   'hashtags', 'post_hashtags',
   'categories', 'model_meta', 'sessions',
   'token_counts', 'bigram_counts', 'phrases',
+  'ads', 'ad_deliveries',
 ];
 
 // Route table. Order matters only where patterns could overlap; these do not.
@@ -83,9 +88,15 @@ const ROUTES = [
   ['GET',  '/admin/users',               handleAdminUsers],
   ['GET',  '/admin/categories',          handleAdminCategories],
   ['GET',  '/admin/phrases',             handleAdminPhrases],
+  ['GET',  '/admin/ads',                 handleAdminAds],
+  ['POST', '/admin/ads',                 handleAdminSaveAd],
+  ['POST', '/admin/ads/:id',             handleAdminSaveAd],
   ['GET',  '/admin/user/:id/interests',  handleAdminUserInterests],
   ['POST', '/admin/post/:id/delete',     handleAdminDeletePost],
   ['POST', '/admin/user/:id/delete',     handleAdminDeleteUser],
+
+  ['POST', '/ads/:id/impression',        handleAdImpression],
+  ['POST', '/ads/:id/click',             handleAdClick],
 ];
 
 export default {

@@ -184,7 +184,7 @@ const ALL_TABLES = [
   'posting_violations', 'follow_requests', 'follows',
   'notifications', 'user_interests', 'engagement', 'feed_seen', 'hashtags',
   'post_hashtags', 'categories', 'model_meta', 'sessions',
-  'token_counts', 'bigram_counts', 'phrases',
+  'token_counts', 'bigram_counts', 'phrases', 'ads', 'ad_deliveries',
 ];
 
 // Minimal D1 stub: enough for /health and a 404, no query execution needed

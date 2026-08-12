@@ -612,6 +612,90 @@ function createPostCard(post) {
   return card;
 }
 
+// =========================================================
+// PERSONALIZED SPONSORED CARDS
+// =========================================================
+
+const adImpressionObserver = new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    const card = entry.target;
+    if (!entry.isIntersecting || entry.intersectionRatio < 0.5) {
+      clearTimeout(card._adImpressionTimer);
+      card._adImpressionTimer = null;
+      continue;
+    }
+    if (card.dataset.impressionSent === 'true' || card._adImpressionTimer) continue;
+    card._adImpressionTimer = setTimeout(() => {
+      card._adImpressionTimer = null;
+      if (!card.isConnected || card.dataset.impressionSent === 'true') return;
+      card.dataset.impressionSent = 'true';
+      api(`/ads/${encodeURIComponent(card.dataset.adId)}/impression`, {
+        method: 'POST',
+        keepalive: true,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deliveryId: card.dataset.deliveryId })
+      }).catch(() => {});
+    }, 1000);
+  }
+}, { threshold: 0.5 });
+
+function createAdCard(ad) {
+  const card = document.createElement('article');
+  card.className = 'sponsored-ad';
+  card.dataset.adId = String(ad.id);
+  card.dataset.deliveryId = String(ad.deliveryId);
+
+  const badge = document.createElement('div');
+  badge.className = 'sponsored-ad-badge';
+  badge.textContent = 'Sponsored';
+  card.appendChild(badge);
+
+  if (ad.image_path) {
+    const image = document.createElement('img');
+    image.className = 'sponsored-ad-image';
+    image.src = ad.image_path;
+    image.alt = '';
+    image.loading = 'lazy';
+    card.appendChild(image);
+  }
+
+  const heading = document.createElement('div');
+  heading.className = 'sponsored-ad-heading';
+  if (ad.emoji) {
+    const emoji = document.createElement('span');
+    emoji.className = 'sponsored-ad-emoji';
+    emoji.textContent = ad.emoji;
+    heading.appendChild(emoji);
+  }
+  const title = document.createElement('h3');
+  title.textContent = ad.title;
+  heading.appendChild(title);
+  card.appendChild(heading);
+
+  const body = document.createElement('p');
+  body.textContent = ad.body;
+  card.appendChild(body);
+
+  const cta = document.createElement('a');
+  cta.className = 'sponsored-ad-cta';
+  cta.href = ad.cta_url;
+  cta.target = '_blank';
+  cta.rel = 'noopener noreferrer sponsored';
+  cta.textContent = ad.cta_label;
+  cta.addEventListener('click', () => {
+    api(`/ads/${encodeURIComponent(ad.id)}/click`, {
+      method: 'POST',
+      keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deliveryId: ad.deliveryId })
+    }).catch(() => {});
+  });
+  card.appendChild(cta);
+
+  adImpressionObserver.observe(card);
+  return card;
+}
+
 
 // =========================================================
 // LOAD YOUR OWN POSTS (PROFILE PAGE)
@@ -725,11 +809,17 @@ async function loadGlobalPosts() {
   try {
     const res = await api(`/global-feed?limit=${globalLimit}`);
     if (!res.ok) throw new Error('Failed to load posts.');
-    const posts = await res.json();
-    if (!Array.isArray(posts)) throw new Error('Invalid feed response.');
+    const items = await res.json();
+    if (!Array.isArray(items)) throw new Error('Invalid feed response.');
 
     let appended = 0;
-    for (const post of posts) {
+    for (const item of items) {
+      if (item.kind === 'ad') {
+        feed.appendChild(createAdCard(item));
+        appended++;
+        continue;
+      }
+      const post = item;
       // The optimistic card created after posting is the only duplicate to
       // suppress. Once the finite post pool is exhausted, repeated cards are
       // intentional so scrolling can continue indefinitely.

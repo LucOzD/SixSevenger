@@ -12,6 +12,7 @@ import {
 } from '../recommender.js';
 import { extractHashtags } from '../vectorizer.js';
 import { sentimentScore } from '../sentiment.js';
+import { selectPersonalizedAd } from './ad-routes.js';
 import {
   SPAM_HIDE_THRESHOLD, SPAM_QUARANTINE_THRESHOLD, POST_MUTE_MS,
   POST_VIOLATION_MEMORY_MS, IDENTICAL_POST_WINDOW_MS, assessPostingSpam,
@@ -1330,7 +1331,14 @@ export async function handleGlobalFeed(ctx) {
     );
   }
 
-  return json(await enrichPosts(db, servedPosts, user.id), { request, env });
+  const enrichedPosts = await enrichPosts(db, servedPosts, user.id);
+  if (enrichedPosts.length >= 4) {
+    const ad = await selectPersonalizedAd(
+      db, user.id, interests, analyser.topology, now
+    );
+    if (ad) enrichedPosts.splice(Math.min(7, enrichedPosts.length), 0, ad);
+  }
+  return json(enrichedPosts, { request, env });
 }
 
 /** Attach like/dislike counts and the caller's own vote. */

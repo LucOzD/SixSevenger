@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin - Ads</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    .ad-admin-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+    .ad-panel { background:#fff; padding:18px; border-radius:10px; box-shadow:0 1px 3px #0002; }
+    .ad-panel label { display:block; margin-top:11px; font-size:13px; font-weight:600; }
+    .ad-panel input, .ad-panel textarea { margin-top:5px; }
+    .ad-panel textarea { min-height:75px; resize:vertical; }
+    .ad-row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .ad-check { display:flex !important; align-items:center; gap:8px; }
+    .ad-check input { width:auto; margin:0; }
+    .ad-actions { display:flex; gap:8px; margin-top:14px; }
+    .ad-actions button { padding:9px 13px; border:0; border-radius:6px; cursor:pointer; }
+    .ad-save { color:#fff; background:#4a8af4; }
+    .ad-cancel { background:#e9ecef; }
+    .admin-ad-item { padding:14px; margin-bottom:10px; border:1px solid #e3e6eb; border-radius:8px; }
+    .admin-ad-top { display:flex; justify-content:space-between; gap:10px; }
+    .admin-ad-status { font-size:12px; font-weight:700; }
+    .admin-ad-status.live { color:#238636; }
+    .admin-ad-meta { margin-top:7px; color:#687386; font-size:12px; }
+    .admin-ad-keywords { margin-top:7px; color:#4a6688; font-size:13px; }
+    @media (max-width:720px) { .ad-admin-grid { grid-template-columns:1fr; } }
+  </style>
+  <script src="/config.js"></script>
+</head>
+<body>
+<nav class="navbar">
+  <div class="nav-left"><span class="logo">SixSevenger</span></div>
+  <div class="nav-right"><button onclick="location.href='/admin.html'">Admin</button></div>
+</nav>
+<div class="container" style="max-width:1000px;">
+  <h1>Personalized Ads</h1>
+  <p>Ads are shown only when their keyword vector is similar enough to a logged-in user’s interests.</p>
+  <div class="ad-admin-grid">
+    <form id="adForm" class="ad-panel">
+      <h2 id="formTitle">Create ad</h2>
+      <input id="adId" type="hidden">
+      <label>Title <input id="title" maxlength="80" required></label>
+      <label>Body <textarea id="body" maxlength="240" required></textarea></label>
+      <div class="ad-row">
+        <label>Emoji <input id="emoji" maxlength="8" placeholder="🎮"></label>
+        <label>Image path <input id="imagePath" maxlength="300" placeholder="/ad-assets/example.png"></label>
+      </div>
+      <label>Destination URL <input id="ctaUrl" type="url" maxlength="500" placeholder="https://example.com" required></label>
+      <label>Button label <input id="ctaLabel" maxlength="30" value="Learn more" required></label>
+      <label>Keywords, comma-separated <textarea id="keywords" maxlength="1000" placeholder="geometry dash, platform games, rhythm" required></textarea></label>
+      <div class="ad-row">
+        <label>Starts <input id="startsAt" type="datetime-local"></label>
+        <label>Ends <input id="endsAt" type="datetime-local"></label>
+      </div>
+      <div class="ad-row">
+        <label>Minimum similarity <input id="minSimilarity" type="number" min="0" max="1" step="0.01" value="0.08"></label>
+        <label>Shows per window <input id="frequencyCap" type="number" min="1" max="20" value="3"></label>
+      </div>
+      <div class="ad-row">
+        <label>Window (hours) <input id="frequencyWindow" type="number" min="1" max="720" value="24"></label>
+        <label>Minimum gap (hours) <input id="minInterval" type="number" min="0" max="720" value="4"></label>
+      </div>
+      <label class="ad-check"><input id="active" type="checkbox"> Active</label>
+      <div id="formMessage" class="form-error" hidden></div>
+      <div class="ad-actions">
+        <button class="ad-save" type="submit">Save ad</button>
+        <button id="cancelEdit" class="ad-cancel" type="button" hidden>Cancel edit</button>
+      </div>
+    </form>
+    <section class="ad-panel">
+      <h2>Ads</h2>
+      <div id="adsList">Loading...</div>
+    </section>
+  </div>
+</div>
+<script>
+const form = document.getElementById('adForm');
+const fields = {
+  id: document.getElementById('adId'), title: document.getElementById('title'),
+  body: document.getElementById('body'), emoji: document.getElementById('emoji'),
+  imagePath: document.getElementById('imagePath'), ctaUrl: document.getElementById('ctaUrl'),
+  ctaLabel: document.getElementById('ctaLabel'), keywords: document.getElementById('keywords'),
+  startsAt: document.getElementById('startsAt'), endsAt: document.getElementById('endsAt'),
+  minSimilarity: document.getElementById('minSimilarity'),
+  frequencyCap: document.getElementById('frequencyCap'),
+  frequencyWindow: document.getElementById('frequencyWindow'),
+  minInterval: document.getElementById('minInterval'), active: document.getElementById('active')
+};
+let ads = [];
+
+function localDateTime(value) {
+  if (!value) return '';
+  const date = new Date(Number(value));
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+function resetForm() {
+  form.reset();
+  fields.id.value = '';
+  fields.ctaLabel.value = 'Learn more';
+  fields.minSimilarity.value = '0.08';
+  fields.frequencyCap.value = '3';
+  fields.frequencyWindow.value = '24';
+  fields.minInterval.value = '4';
+  document.getElementById('formTitle').textContent = 'Create ad';
+  document.getElementById('cancelEdit').hidden = true;
+  document.getElementById('formMessage').hidden = true;
+}
+
+function editAd(ad) {
+  fields.id.value = ad.id;
+  fields.title.value = ad.title || '';
+  fields.body.value = ad.body || '';
+  fields.emoji.value = ad.emoji || '';
+  fields.imagePath.value = ad.image_path || '';
+  fields.ctaUrl.value = ad.cta_url || '';
+  fields.ctaLabel.value = ad.cta_label || '';
+  fields.keywords.value = (ad.keywords || []).join(', ');
+  fields.startsAt.value = localDateTime(ad.starts_at);
+  fields.endsAt.value = localDateTime(ad.ends_at);
+  fields.minSimilarity.value = ad.min_similarity;
+  fields.frequencyCap.value = ad.frequency_cap;
+  fields.frequencyWindow.value = Number(ad.frequency_window_ms) / 3600000;
+  fields.minInterval.value = Number(ad.min_interval_ms) / 3600000;
+  fields.active.checked = Boolean(ad.active);
+  document.getElementById('formTitle').textContent = 'Edit ad';
+  document.getElementById('cancelEdit').hidden = false;
+  scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function renderAds() {
+  const list = document.getElementById('adsList');
+  list.replaceChildren();
+  if (!ads.length) {
+    list.textContent = 'No ads yet.';
+    return;
+  }
+  for (const ad of ads) {
+    const item = document.createElement('div');
+    item.className = 'admin-ad-item';
+    const top = document.createElement('div');
+    top.className = 'admin-ad-top';
+    const title = document.createElement('strong');
+    title.textContent = `${ad.emoji || '📣'} ${ad.title}`;
+    const status = document.createElement('span');
+    status.className = `admin-ad-status${ad.active ? ' live' : ''}`;
+    status.textContent = ad.active ? 'ACTIVE' : 'PAUSED';
+    top.append(title, status);
+    const body = document.createElement('div');
+    body.textContent = ad.body;
+    const keywords = document.createElement('div');
+    keywords.className = 'admin-ad-keywords';
+    keywords.textContent = `Keywords: ${(ad.keywords || []).join(', ')}`;
+    const meta = document.createElement('div');
+    meta.className = 'admin-ad-meta';
+    meta.textContent = `${Number(ad.impressions) || 0} impressions · ${Number(ad.clicks) || 0} clicks · similarity ≥ ${ad.min_similarity}`;
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.textContent = 'Edit';
+    edit.style.marginTop = '9px';
+    edit.addEventListener('click', () => editAd(ad));
+    item.append(top, body, keywords, meta, edit);
+    list.appendChild(item);
+  }
+}
+
+async function loadAds() {
+  const response = await api('/admin/ads');
+  const result = await response.json().catch(() => []);
+  if (!response.ok || !Array.isArray(result)) {
+    document.getElementById('adsList').textContent = result.error || 'Unable to load ads.';
+    return;
+  }
+  ads = result;
+  renderAds();
+}
+
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const message = document.getElementById('formMessage');
+  message.hidden = true;
+  const payload = {
+    title: fields.title.value, body: fields.body.value, emoji: fields.emoji.value,
+    image_path: fields.imagePath.value, cta_url: fields.ctaUrl.value,
+    cta_label: fields.ctaLabel.value, keywords: fields.keywords.value,
+    starts_at: fields.startsAt.value ? new Date(fields.startsAt.value).getTime() : null,
+    ends_at: fields.endsAt.value ? new Date(fields.endsAt.value).getTime() : null,
+    min_similarity: Number(fields.minSimilarity.value),
+    frequency_cap: Number(fields.frequencyCap.value),
+    frequency_window_ms: Number(fields.frequencyWindow.value) * 3600000,
+    min_interval_ms: Number(fields.minInterval.value) * 3600000,
+    active: fields.active.checked
+  };
+
+  const path = fields.id.value ? `/admin/ads/${encodeURIComponent(fields.id.value)}` : '/admin/ads';
+  try {
+    const response = await api(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.success) throw new Error(result.error || 'Unable to save ad.');
+    resetForm();
+    await loadAds();
+  } catch (error) {
+    message.textContent = error.message || 'Unable to save ad.';
+    message.hidden = false;
+  }
+});
+
+document.getElementById('cancelEdit').addEventListener('click', resetForm);
+loadAds();
+</script>
+</body>
+</html>
