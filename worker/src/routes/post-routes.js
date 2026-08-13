@@ -974,6 +974,7 @@ export async function handleGlobalFeed(ctx) {
       request,
       env,
       extraHeaders: {
+        'Cache-Control': 'no-store',
         'X-Feed-Next-Offset': String(cycleEnd ? 0 : nextOffset),
         'X-Feed-Cycle-End': cycleEnd ? '1' : '0',
       },
@@ -1371,7 +1372,10 @@ export async function handleGlobalFeed(ctx) {
   return json(enrichedPosts, {
     request,
     env,
-    extraHeaders: recycledFeedCycle ? { 'X-Feed-Cycle-Reset': '1' } : {},
+    extraHeaders: {
+      'Cache-Control': 'no-store',
+      ...(recycledFeedCycle ? { 'X-Feed-Cycle-Reset': '1' } : {}),
+    },
   });
 }
 
