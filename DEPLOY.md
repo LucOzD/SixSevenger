@@ -467,6 +467,9 @@ full 20-slot feed page, the most relevant currently active campaign occupies
 the final slot in place of an organic post; the displaced post remains eligible
 for the next page. Minimum similarity and frequency settings guide preference
 and rotation without leaving a scheduled ad slot empty when inventory exists.
+Selection keeps the highest-ranked campaign as the 70% default and uses the
+remaining 30% for weighted exploration among up to three strong alternatives,
+so relevance remains dominant without one campaign monopolizing every slot.
 Guests receive an untracked, non-personalized active fallback. Feed traversal
 continues through successive ranked windows; after the full available pool has
 been shown, a new cycle begins instead of stopping or immediately repeating the

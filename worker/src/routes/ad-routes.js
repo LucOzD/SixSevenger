@@ -11,6 +11,33 @@ import {
 } from '../ads.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const AD_EXPLORATION_RATE = 0.30;
+const AD_EXPLORATION_POOL_SIZE = 4;
+
+/** Usually keep the best match, but occasionally sample another strong ad. */
+function chooseAdWithExploration(ranked, random = Math.random) {
+  if (!ranked?.length) return null;
+  if (ranked.length === 1 || random() >= AD_EXPLORATION_RATE) return ranked[0];
+
+  // Exclude the winner during an exploration draw so the exploration budget
+  // actually creates campaign variety. Rank, relevance, threshold quality and
+  // prior impressions still weight which alternative wins.
+  const alternatives = ranked.slice(1, AD_EXPLORATION_POOL_SIZE);
+  const weighted = alternatives.map((ad, index) => ({
+    ad,
+    weight:
+      (1 / (index + 1)) *
+      (ad.meetsThreshold ? 2 : 1 + Math.max(0, Number(ad.similarity) || 0)) *
+      (1 / (1 + Number(ad.recent_impressions || 0))),
+  }));
+  const totalWeight = weighted.reduce((sum, item) => sum + item.weight, 0);
+  let draw = random() * totalWeight;
+  for (const item of weighted) {
+    draw -= item.weight;
+    if (draw <= 0) return item.ad;
+  }
+  return weighted.at(-1)?.ad || ranked[0];
+}
 
 function optionalTime(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -182,7 +209,17 @@ export async function selectPersonalizedAd(db, userId, interests, topology, now 
     Number(ad.recent_impressions || 0) < Number(ad.frequency_cap) &&
     Number(ad.last_impression || 0) <= now - Number(ad.min_interval_ms || 0)
   );
-  const ad = withinFrequencyControls[0] || ranked[0];
+
+  // Prefer campaigns within their rotation controls. If only one qualifies,
+  // retain it as the default but allow other ranked campaigns into controlled
+  // exploration so a single ad does not monopolize every slot.
+  const rotationPool = withinFrequencyControls.length >= 2
+    ? withinFrequencyControls
+    : [
+        ...withinFrequencyControls,
+        ...ranked.filter((ad) => !withinFrequencyControls.includes(ad)),
+      ];
+  const ad = chooseAdWithExploration(rotationPool);
   if (!ad) return null;
 
   // Guests receive the same cadence with a non-personalized fallback, but no
