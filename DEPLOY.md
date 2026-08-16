@@ -471,9 +471,11 @@ Selection keeps the highest-ranked campaign as the 70% default and uses the
 remaining 30% for weighted exploration among up to three strong alternatives,
 so relevance remains dominant without one campaign monopolizing every slot.
 Guests receive an untracked, non-personalized active fallback. Feed traversal
-continues through successive ranked windows; after the full available pool has
-been shown, a new cycle begins instead of stopping or immediately repeating the
-same small group of posts.
+continues through successive ranked windows, while the browser keeps every
+rendered post ID for the lifetime of that page and will never append that post
+a second time. After the available pool is shown, quiet retries use backend
+cycles only to discover newly-created posts; previously rendered posts and ads
+from duplicate-only responses are discarded.
 
 Ad images remain ordinary Pages assets—put them under `pages/ad-assets/` and
 enter a path such as `/ad-assets/controller.png`. This keeps ads on the same

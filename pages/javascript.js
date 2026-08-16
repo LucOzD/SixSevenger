@@ -799,9 +799,38 @@ if (document.getElementById('myComments')) loadMyComments();
 // =========================================================
 
 const globalLimit = 20;
+const ORGANIC_POSTS_PER_AD_SLOT = 19;
+const FEED_RETRY_MS = 15_000;
 let globalLoading = false;
 let globalFeedOffset = 0;
+let organicPostsSinceAd = 0;
+let pendingFeedAd = null;
+let feedRetryTimer = null;
 const renderedFeedPostIds = new Set();
+
+function appendPendingFeedAd(feed) {
+  if (!pendingFeedAd || organicPostsSinceAd < ORGANIC_POSTS_PER_AD_SLOT) return false;
+  feed.appendChild(createAdCard(pendingFeedAd));
+  pendingFeedAd = null;
+  organicPostsSinceAd = 0;
+  return true;
+}
+
+function clearFeedRetry() {
+  if (!feedRetryTimer) return;
+  clearTimeout(feedRetryTimer);
+  feedRetryTimer = null;
+}
+
+function scheduleFeedRetry() {
+  if (feedRetryTimer) return;
+  feedRetryTimer = setTimeout(() => {
+    feedRetryTimer = null;
+    const nearBottom = window.innerHeight + window.scrollY >=
+      document.body.offsetHeight - 500;
+    if (!document.hidden && nearBottom) loadGlobalPosts();
+  }, FEED_RETRY_MS);
+}
 
 async function loadGlobalPosts() {
   const feed = document.getElementById("globalFeed");
@@ -816,11 +845,9 @@ async function loadGlobalPosts() {
   try {
     let items = [];
     let cycleEnd = false;
-    let cycleReset = false;
 
     // A guest ranking window can contain rows removed by the final behavioral
-    // spam filter. Skip an empty window immediately instead of making scrolling
-    // appear to stop while more ranked windows still exist.
+    // spam filter. Skip an empty window immediately when more windows exist.
     for (let attempt = 0; attempt < 4; attempt++) {
       const query = new URLSearchParams({
         limit: String(globalLimit),
@@ -831,26 +858,26 @@ async function loadGlobalPosts() {
       items = await res.json();
       if (!Array.isArray(items)) throw new Error('Invalid feed response.');
 
-      const nextOffset = Number(res.headers.get('X-Feed-Next-Offset'));
-      if (Number.isFinite(nextOffset) && nextOffset >= 0) {
+      const nextOffsetHeader = res.headers.get('X-Feed-Next-Offset');
+      const nextOffset = Number(nextOffsetHeader);
+      if (nextOffsetHeader !== null && Number.isFinite(nextOffset) && nextOffset >= 0) {
         globalFeedOffset = nextOffset;
       }
       cycleEnd = res.headers.get('X-Feed-Cycle-End') === '1';
-      cycleReset = res.headers.get('X-Feed-Cycle-Reset') === '1';
       if (items.length > 0 || cycleEnd) break;
     }
 
-    // Logged-in feeds announce when least-recently-seen rotation starts so
-    // posts from the completed cycle may be rendered again in the new cycle.
-    if (cycleReset) renderedFeedPostIds.clear();
-
+    // This set is deliberately never cleared during the page lifetime. Backend
+    // cycles may discover newly-created posts, but an existing card can never
+    // be appended to this feed a second time.
+    const batchHasNewPosts = items.some((item) =>
+      item.kind !== 'ad' && !renderedFeedPostIds.has(String(item.id))
+    );
     let appended = 0;
     for (const item of items) {
       if (item.kind === 'ad') {
-        // The Worker reserves this normal feed slot, so rendering the response
-        // in order makes the ad the 20th card rather than a 21st extra card.
-        feed.appendChild(createAdCard(item));
-        appended++;
+        if (batchHasNewPosts && !pendingFeedAd) pendingFeedAd = item;
+        if (appendPendingFeedAd(feed)) appended++;
         continue;
       }
 
@@ -862,22 +889,24 @@ async function loadGlobalPosts() {
         child.dataset.optimistic === 'true' && child.dataset.postId === postId
       );
       renderedFeedPostIds.add(postId);
+      organicPostsSinceAd++;
       if (optimistic) {
         delete optimistic.dataset.optimistic;
+        if (appendPendingFeedAd(feed)) appended++;
         continue;
       }
 
       feed.appendChild(createPostCard(item));
       appended++;
+      if (appendPendingFeedAd(feed)) appended++;
     }
 
-    // Guests restart only after every ranked SQL window has been traversed.
-    // Clearing after this page allows the next cycle without duplicating posts
-    // inside the cycle that just completed.
-    if (cycleEnd) renderedFeedPostIds.clear();
+    if (appended > 0) clearFeedRetry();
+    else scheduleFeedRetry();
     return appended;
   } catch (error) {
     console.error(error);
+    scheduleFeedRetry();
     return 0;
   } finally {
     if (loading) loading.style.display = 'none';
@@ -887,7 +916,7 @@ async function loadGlobalPosts() {
 
 async function fillFeedViewport() {
   // A short page may not create a scrollbar, so fetch a few more ranked pages
-  // immediately while preserving the same continuous cycle behavior.
+  // immediately. Duplicate-only cycles stop this burst and retry quietly later.
   for (let attempt = 0; attempt < 4; attempt++) {
     const added = await loadGlobalPosts();
     if (added === 0 || document.body.offsetHeight > window.innerHeight + 300) break;
