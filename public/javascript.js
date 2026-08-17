@@ -519,23 +519,42 @@ if (document.getElementById("myPosts")) loadMyPosts();
 let globalOffset = 0;
 const globalLimit = 20;
 let globalLoading = false;
+let globalExhausted = false;
+const renderedGlobalPostIds = new Set();
 
 async function loadGlobalPosts() {
   const feed = document.getElementById("globalFeed");
-  if (!feed) return;
+  if (!feed || globalLoading || globalExhausted) return;
 
-  if (globalLoading) return;
+  // index.ejs ships a #loading element. Toggle it here and always hide it in
+  // finally, so a failed or empty page can never leave "Loading..." on screen.
+  const indicator = document.getElementById("loading");
+  if (indicator) indicator.style.display = "block";
+
   globalLoading = true;
+  try {
+    const res = await fetch(`/global-feed?limit=${globalLimit}&offset=${globalOffset}`);
+    if (!res.ok) throw new Error(`Feed request failed (${res.status})`);
 
-  const res = await fetch(`/global-feed?limit=${globalLimit}&offset=${globalOffset}`);
-  const posts = await res.json();
+    const posts = await res.json();
+    if (!Array.isArray(posts)) throw new Error("Feed returned an invalid response");
 
-  posts.forEach(post => {
-    feed.appendChild(createPostCard(post));
-  });
+    // Advance by rows returned, not by the requested page size. The permanent
+    // set prevents a post from rendering twice during this browser page session.
+    globalOffset += posts.length;
+    posts.forEach(post => {
+      if (!post.id || renderedGlobalPostIds.has(post.id)) return;
+      renderedGlobalPostIds.add(post.id);
+      feed.appendChild(createPostCard(post));
+    });
 
-  globalOffset += globalLimit;
-  globalLoading = false;
+    if (posts.length < globalLimit) globalExhausted = true;
+  } catch (error) {
+    console.error("Failed to load global feed:", error);
+  } finally {
+    globalLoading = false;
+    if (indicator) indicator.style.display = "none";
+  }
 }
 
 if (document.getElementById("globalFeed")) {

@@ -37,7 +37,7 @@ async function loadHashtag() {
 
   document.getElementById('hashtagTitle').textContent = '#' + tag;
 
-  const res = await api('/api/hashtag/' + tag, {
+  const res = await api('/api/hashtag/' + encodeURIComponent(tag), {
     headers: { 'Accept': 'application/json' }
   });
   const data = await res.json();
@@ -55,7 +55,7 @@ async function loadHashtag() {
 
     data.similar_hashtags.forEach(h => {
       const link = document.createElement('a');
-      link.href = '/hashtag/' + h.tag;
+      link.href = '/hashtag.html?tag=' + encodeURIComponent(h.tag);
       link.className = 'hashtag similar-tag';
       link.textContent = '#' + h.tag;
       link.title = h.post_count + ' posts · ' + h.reason;

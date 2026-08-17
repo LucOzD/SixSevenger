@@ -31,6 +31,45 @@ const RECOMMENDER_URL = process.env.RECOMMENDER_URL || 'http://localhost:5001';
 // Posting about something is a strong signal of interest.
 const POST_INTEREST_WEIGHT = 0.15;
 
+function extractPostHashtags(text) {
+  return [...new Set(
+    [...String(text || '').matchAll(/#([a-zA-Z0-9_]+)/g)]
+      .map((match) => match[1].toLowerCase())
+  )];
+}
+
+// Hashtag navigation must not depend on the Python recommender being ready.
+// Index the text immediately, then attach its learned category asynchronously.
+function indexPostHashtags(postId, text, categoryId = -1) {
+  const tags = extractPostHashtags(text);
+  for (const tag of tags) {
+    const existing = db().prepare(
+      'SELECT 1 AS found FROM post_hashtags WHERE postId = ? AND tag = ?'
+    ).get(postId, tag);
+
+    if (!existing) {
+      db().prepare(`
+        INSERT INTO post_hashtags (postId, tag) VALUES (?, ?)
+        ON CONFLICT(postId, tag) DO NOTHING
+      `).run(postId, tag);
+      db().prepare(`
+        INSERT INTO hashtags (tag, category_id, post_count)
+        VALUES (?, ?, 1)
+        ON CONFLICT(tag) DO UPDATE SET
+          category_id = CASE
+            WHEN excluded.category_id != -1 THEN excluded.category_id
+            ELSE hashtags.category_id
+          END,
+          post_count = hashtags.post_count + 1
+      `).run(tag, categoryId);
+    } else if (categoryId !== -1) {
+      db().prepare('UPDATE hashtags SET category_id = ? WHERE tag = ?')
+        .run(categoryId, tag);
+    }
+  }
+  return tags;
+}
+
 // Record a category-interest signal for a user directly in SQLite.
 // Scores are allowed to go negative so disliked topics get suppressed.
 function recordCategoryScore(userId, categoryId, delta) {
@@ -89,27 +128,11 @@ async function categorisePost(postId, text, authorId) {
         recordCategoryScore(authorId, data.category_id, POST_INTEREST_WEIGHT);
       }
 
-      // Store hashtag associations: each hashtag maps to this category
-      if (data.hashtags && data.hashtags.length > 0) {
-        for (const tag of data.hashtags) {
-          db().prepare(`
-            INSERT INTO hashtags (tag, category_id, post_count)
-            VALUES (?, ?, 1)
-            ON CONFLICT(tag) DO UPDATE SET
-              category_id = excluded.category_id,
-              post_count = post_count + 1
-          `).run(tag, data.category_id);
-
-          db().prepare(`
-            INSERT INTO post_hashtags (postId, tag) VALUES (?, ?)
-            ON CONFLICT(postId, tag) DO NOTHING
-          `).run(postId, tag);
-        }
-
-        // Hashtags give a stronger interest signal than plain text
-        if (authorId) {
-          recordCategoryScore(authorId, data.category_id, data.hashtags.length * 0.05);
-        }
+      // The association was inserted synchronously when the post was saved.
+      // Categorisation now only enriches it with the learned category.
+      const hashtags = indexPostHashtags(postId, text, data.category_id);
+      if (authorId && hashtags.length > 0) {
+        recordCategoryScore(authorId, data.category_id, hashtags.length * 0.05);
       }
     }
   } catch (_) {
@@ -422,6 +445,10 @@ app.post("/save-message", (req, res) => {
     VALUES (?, ?, ?, ?)\
   `).run(id, req.user.id, text, timestamp);
 
+  // Persist hashtag navigation before the asynchronous recommender call. This
+  // still works while Python is starting or temporarily unavailable.
+  indexPostHashtags(id, text);
+
   // Categorise in background — doesn't block the response.
   // Author is passed so the post feeds their own interest profile.
   categorisePost(id, text, req.user.id);
@@ -674,36 +701,29 @@ function getRelevantAccountIds(userId, topN = 20) {
 // weighted by recency, with seen-penalty for already-served posts.
 // ---------------------------------------------------------
 app.get("/global-feed", async (req, res) => {
-  const limit  = parseInt(req.query.limit)  || 20;
-  const offset = parseInt(req.query.offset) || 0;
+  const requestedLimit = Number.parseInt(req.query.limit, 10);
+  const requestedOffset = Number.parseInt(req.query.offset, 10);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.min(50, Math.max(1, requestedLimit))
+    : 20;
+  const offset = Number.isFinite(requestedOffset)
+    ? Math.max(0, requestedOffset)
+    : 0;
+  const selectionLimit = Math.min(200, offset + limit);
 
   // Topology-aware category scores
   const categoryScores = await getRankedCategoryScores(req.user.id);
 
   // Get relevant accounts for this user (null = cold start / new user)
   const relevantIds = getRelevantAccountIds(req.user.id, 20);
-
   const now = Date.now();
-
-  // Exclude posts seen in the last 5 MINUTES (not 1 hour) for this session.
-  // This prevents the same posts from appearing on immediate re-scroll,
-  // but doesn't starve the feed on subsequent page loads.
-  const recentlySeen = db().prepare(`
-    SELECT postId FROM feed_seen
-    WHERE userId = ? AND seenAt > ?
-  `).all(req.user.id, now - 5 * 60 * 1000).map(r => r.postId);
-
-  const excludeClause = recentlySeen.length > 0
-    ? `AND posts.id NOT IN (${recentlySeen.map(() => '?').join(',')})`
-    : '';
-  const excludeParams = recentlySeen.length > 0 ? recentlySeen : [];
-
   let posts;
 
+  // feed_seen is deliberately not a hard filter here. Browser refresh starts at
+  // offset zero, while pagination selects a deterministic slice of one ranking.
+
   if (relevantIds === null) {
-    // COLD START: pick posts spread across as many categories as possible
-    // so the user sees a wide variety and their interactions teach the algorithm.
-    // Get one recent post from each category, ordered by recency.
+    // COLD START: put one post from each category first, then fill for volume.
     posts = db().prepare(`
       SELECT posts.*, users.username, users.profilePic
       FROM posts
@@ -712,45 +732,39 @@ app.get("/global-feed", async (req, res) => {
         AND posts.deleted = 0
         AND posts.spam_score < 0.9
         AND posts.category_id != -1
-        ${excludeClause}
-      ORDER BY posts.timestamp DESC
+      ORDER BY posts.timestamp DESC, posts.id ASC
       LIMIT 200
-    `).all(req.user.id, ...excludeParams);
+    `).all(req.user.id);
 
-    // Deduplicate by category: pick the most recent post per category
     const seenCats = new Set();
     const diverse = [];
-    for (const p of posts) {
-      if (!seenCats.has(p.category_id)) {
-        diverse.push(p);
-        seenCats.add(p.category_id);
+    for (const post of posts) {
+      if (!seenCats.has(post.category_id)) {
+        diverse.push(post);
+        seenCats.add(post.category_id);
       }
     }
-    // Fill remaining slots with other recent posts for volume
-    for (const p of posts) {
-      if (diverse.length >= 60) break;
-      if (!diverse.includes(p)) diverse.push(p);
+    for (const post of posts) {
+      if (!diverse.some(item => item.id === post.id)) diverse.push(post);
     }
     posts = diverse;
   } else if (relevantIds.length > 0) {
-    const ph = relevantIds.map(() => '?').join(',');
+    const placeholders = relevantIds.map(() => '?').join(',');
     posts = db().prepare(`
       SELECT posts.*, users.username, users.profilePic
       FROM posts
       JOIN users ON posts.userId = users.id
-      WHERE posts.userId IN (${ph})
+      WHERE posts.userId IN (${placeholders})
         AND posts.userId != ?
         AND posts.deleted = 0
         AND posts.spam_score < 0.9
-        ${excludeClause}
-      ORDER BY posts.timestamp DESC
+      ORDER BY posts.timestamp DESC, posts.id ASC
       LIMIT 200
-    `).all(...relevantIds, req.user.id, ...excludeParams);
+    `).all(...relevantIds, req.user.id);
 
-    // BACKFILL: if relevant accounts didn't produce enough posts,
-    // pull from all users to guarantee the feed is never empty.
-    if (posts.length < limit) {
-      const existingIds = new Set(posts.map(p => p.id));
+    // Backfill globally so relevance filtering cannot leave later pages empty.
+    if (posts.length < 200) {
+      const existingIds = new Set(posts.map(post => post.id));
       const backfill = db().prepare(`
         SELECT posts.*, users.username, users.profilePic
         FROM posts
@@ -758,14 +772,13 @@ app.get("/global-feed", async (req, res) => {
         WHERE posts.userId != ?
           AND posts.deleted = 0
           AND posts.spam_score < 0.9
-          ${excludeClause}
-        ORDER BY posts.timestamp DESC
+        ORDER BY posts.timestamp DESC, posts.id ASC
         LIMIT 200
-      `).all(req.user.id, ...excludeParams);
-      for (const p of backfill) {
-        if (!existingIds.has(p.id)) {
-          posts.push(p);
-          existingIds.add(p.id);
+      `).all(req.user.id);
+      for (const post of backfill) {
+        if (!existingIds.has(post.id)) {
+          posts.push(post);
+          existingIds.add(post.id);
         }
         if (posts.length >= 200) break;
       }
@@ -775,12 +788,12 @@ app.get("/global-feed", async (req, res) => {
       SELECT posts.*, users.username, users.profilePic
       FROM posts
       JOIN users ON posts.userId = users.id
-      WHERE posts.userId != ? AND posts.deleted = 0
+      WHERE posts.userId != ?
+        AND posts.deleted = 0
         AND posts.spam_score < 0.9
-        ${excludeClause}
-      ORDER BY posts.timestamp DESC
+      ORDER BY posts.timestamp DESC, posts.id ASC
       LIMIT 200
-    `).all(req.user.id, ...excludeParams);
+    `).all(req.user.id);
   }
 
   // Engagement signal: posts with high avg view time get a small boost
@@ -819,43 +832,38 @@ app.get("/global-feed", async (req, res) => {
     return { ...p, _score: score };
   });
 
-  // Sort by score, then enforce diversity: max 2 posts per user, prefer
-  // not adjacent but don't let it starve the feed.
-  scored.sort((a, b) => b._score - a._score);
+  // Stable tie-breakers keep offset pages from reshuffling equal-scored posts.
+  scored.sort((a, b) =>
+    b._score - a._score || b.timestamp - a.timestamp || String(a.id).localeCompare(String(b.id))
+  );
 
-  const userCount = {};    // userId -> how many posts picked so far
+  const userCount = {};
   const diverseFeed = [];
+  const selectedIds = new Set();
   let lastUserId = null;
 
-  // Reserve ~10% of the feed for exploration posts from similar categories
-  const exploreSlots = Math.max(1, Math.floor(limit * 0.1));
-  const mainSlots = limit - exploreSlots;
-
-  // First pass: diversity-enforced (max 2 per user, no adjacent same user)
-  for (const p of scored) {
-    if (diverseFeed.length >= mainSlots) break;
-
-    const count = userCount[p.userId] || 0;
-    if (count >= 2) continue;            // max 2 posts per user
-    if (p.userId === lastUserId) continue; // prefer not back-to-back
-
-    userCount[p.userId] = count + 1;
-    lastUserId = p.userId;
-    diverseFeed.push(p);
+  // Build one stable ranking pool. First prefer no adjacent author and max two
+  // posts per author, then relax caps only as needed so diversity never starves.
+  for (const post of scored) {
+    const count = userCount[post.userId] || 0;
+    if (count >= 2 || post.userId === lastUserId) continue;
+    userCount[post.userId] = count + 1;
+    lastUserId = post.userId;
+    diverseFeed.push(post);
+    selectedIds.add(post.id);
   }
-
-  // Second pass: if feed is still short, relax the adjacent rule
-  if (diverseFeed.length < mainSlots) {
-    for (const p of scored) {
-      if (diverseFeed.length >= mainSlots) break;
-      if (diverseFeed.some(f => f.id === p.id)) continue; // already included
-
-      const count = userCount[p.userId] || 0;
-      if (count >= 3) continue; // slightly relaxed cap
-
-      userCount[p.userId] = count + 1;
-      diverseFeed.push(p);
-    }
+  for (const post of scored) {
+    if (selectedIds.has(post.id)) continue;
+    const count = userCount[post.userId] || 0;
+    if (count >= 3) continue;
+    userCount[post.userId] = count + 1;
+    diverseFeed.push(post);
+    selectedIds.add(post.id);
+  }
+  for (const post of scored) {
+    if (selectedIds.has(post.id)) continue;
+    diverseFeed.push(post);
+    selectedIds.add(post.id);
   }
 
   // Exploration: find categories similar to what the user likes and pull
@@ -887,57 +895,54 @@ app.get("/global-feed", async (req, res) => {
     similarCats = [...new Set(similarCats)];
 
     if (similarCats.length > 0) {
-      const seenPostIds = new Set(diverseFeed.map(p => p.id));
-      const simPH = similarCats.map(() => '?').join(',');
+      const placeholders = similarCats.map(() => '?').join(',');
       const simPosts = db().prepare(`
         SELECT posts.*, users.username, users.profilePic
         FROM posts
         JOIN users ON posts.userId = users.id
-        WHERE posts.category_id IN (${simPH})
+        WHERE posts.category_id IN (${placeholders})
           AND posts.userId != ?
           AND posts.deleted = 0
           AND posts.spam_score < 0.9
-        ORDER BY posts.timestamp DESC
+        ORDER BY posts.timestamp DESC, posts.id ASC
         LIMIT 20
       `).all(...similarCats, req.user.id);
 
-      for (const p of simPosts) {
-        if (explorePosts.length >= exploreSlots) break;
-        if (seenPostIds.has(p.id)) continue;
-        const count = userCount[p.userId] || 0;
-        if (count >= 2) continue;
-        userCount[p.userId] = count + 1;
-        explorePosts.push({ ...p, _score: 0, _explore: true });
+      for (const post of simPosts) {
+        if (selectedIds.has(post.id)) continue;
+        explorePosts.push({ ...post, _score: 0, _explore: true });
       }
     }
   }
 
-  // Interleave exploration posts into the main feed (every 8th slot)
+  // Interleave exploration predictably, then take exactly the requested page.
   const finalPosts = [];
-  let ei = 0;
-  for (let i = 0; i < diverseFeed.length; i++) {
-    finalPosts.push(diverseFeed[i]);
-    if ((i + 1) % 8 === 0 && ei < explorePosts.length) {
-      finalPosts.push(explorePosts[ei++]);
+  let exploreIndex = 0;
+  for (let index = 0; index < diverseFeed.length && finalPosts.length < selectionLimit; index++) {
+    finalPosts.push(diverseFeed[index]);
+    if ((index + 1) % 8 === 0 && exploreIndex < explorePosts.length && finalPosts.length < selectionLimit) {
+      finalPosts.push(explorePosts[exploreIndex++]);
     }
   }
-  // Append any remaining exploration posts
-  while (ei < explorePosts.length) {
-    finalPosts.push(explorePosts[ei++]);
+  while (finalPosts.length < selectionLimit && exploreIndex < explorePosts.length) {
+    finalPosts.push(explorePosts[exploreIndex++]);
   }
 
-  // Record these posts as "seen" for future penalty
+  const pagePosts = finalPosts.slice(offset, offset + limit);
+
+  // Keep analytics, but record only this response page and never use it as a
+  // cross-refresh exclusion list.
   const seenNow = Date.now();
-  for (const p of finalPosts) {
+  for (const post of pagePosts) {
     db().prepare(`
       INSERT INTO feed_seen (userId, postId, seenAt)
       VALUES (?, ?, ?)
       ON CONFLICT(userId, postId) DO UPDATE SET seenAt = excluded.seenAt
-    `).run(req.user.id, p.id, seenNow);
+    `).run(req.user.id, post.id, seenNow);
   }
 
   // Enrich with like/dislike counts
-  const enriched = finalPosts.map(p => {
+  const enriched = pagePosts.map(p => {
     const counts = db().prepare(`
       SELECT
         SUM(CASE WHEN value =  1 THEN 1 ELSE 0 END) AS likes,

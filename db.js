@@ -228,6 +228,59 @@ async function initDb() {
     )
   `).run();
 
+  // Older posts and posts saved while the Python recommender was unavailable
+  // may contain hashtags without index rows. Backfill those associations from
+  // source text, then rebuild each hashtag's count/category idempotently.
+  const hashtagPosts = db.prepare(`
+    SELECT id, text FROM posts
+    WHERE deleted = 0 AND text LIKE '%#%'
+  `).all();
+  const indexed = new Set(
+    db.prepare('SELECT postId, tag FROM post_hashtags').all()
+      .map((row) => `${row.postId}\u0000${row.tag}`)
+  );
+  for (const post of hashtagPosts) {
+    const tags = new Set(
+      [...String(post.text || '').matchAll(/#([a-zA-Z0-9_]+)/g)]
+        .map((match) => match[1].toLowerCase())
+    );
+    for (const tag of tags) {
+      const key = `${post.id}\u0000${tag}`;
+      if (indexed.has(key)) continue;
+      db.prepare(`
+        INSERT INTO post_hashtags (postId, tag) VALUES (?, ?)
+        ON CONFLICT(postId, tag) DO NOTHING
+      `).run(post.id, tag);
+      indexed.add(key);
+    }
+  }
+
+  // Clear stale aggregate counts first, then rebuild them from live posts.
+  db.prepare('UPDATE hashtags SET post_count = 0').run();
+
+  const hashtagStats = db.prepare(`
+    SELECT ph.tag, COUNT(*) AS post_count,
+           COALESCE((
+             SELECT p2.category_id
+             FROM post_hashtags ph2
+             JOIN posts p2 ON p2.id = ph2.postId
+             WHERE ph2.tag = ph.tag AND p2.deleted = 0 AND p2.category_id != -1
+             ORDER BY p2.timestamp DESC LIMIT 1
+           ), -1) AS category_id
+    FROM post_hashtags ph
+    JOIN posts p ON p.id = ph.postId
+    WHERE p.deleted = 0
+    GROUP BY ph.tag
+  `).all();
+  for (const stat of hashtagStats) {
+    db.prepare(`
+      INSERT INTO hashtags (tag, category_id, post_count) VALUES (?, ?, ?)
+      ON CONFLICT(tag) DO UPDATE SET
+        category_id = excluded.category_id,
+        post_count = excluded.post_count
+    `).run(stat.tag, stat.category_id, stat.post_count);
+  }
+
   return db;
 }
 
