@@ -10,3 +10,8 @@ __pycache__/
 
 # Wrangler's local state and simulated D1 database
 .wrangler/
+
+# Documentation. Not needed to run, build or deploy the app.
+# worker/wrangler.toml is deliberately NOT ignored: wrangler reads it to deploy
+# the Worker (project name, entry point, compatibility date, D1 binding).
+*.md
