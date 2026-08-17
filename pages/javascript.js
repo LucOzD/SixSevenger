@@ -801,6 +801,9 @@ if (document.getElementById('myComments')) loadMyComments();
 const globalLimit = 20;
 const ORGANIC_POSTS_PER_AD_SLOT = 19;
 const FEED_RETRY_MS = 15_000;
+// Shown instead of a spinner when a cycle returned only already-rendered posts.
+// Repeats stay forbidden, so the honest state is "nothing new yet", not loading.
+const FEED_IDLE_MESSAGE = 'No new posts right now — checking for more…';
 let globalLoading = false;
 let globalFeedOffset = 0;
 let organicPostsSinceAd = 0;
@@ -828,13 +831,17 @@ function scheduleFeedRetry() {
     feedRetryTimer = null;
     const nearBottom = window.innerHeight + window.scrollY >=
       document.body.offsetHeight - 500;
-    if (!document.hidden && nearBottom) loadGlobalPosts();
+    if (!document.hidden && nearBottom) loadGlobalPosts({ fromRetry: true });
   }, FEED_RETRY_MS);
 }
 
-async function loadGlobalPosts() {
+async function loadGlobalPosts({ fromRetry = false } = {}) {
   const feed = document.getElementById("globalFeed");
   if (!feed || globalLoading) return 0;
+
+  // A duplicate-only cycle is already being polled on a timer. Ignoring scroll
+  // bursts until it fires stops the Worker being hammered at the feed bottom.
+  if (feedRetryTimer && !fromRetry) return 0;
 
   globalLoading = true;
   const loading = document.getElementById('loading');
@@ -842,6 +849,7 @@ async function loadGlobalPosts() {
     loading.textContent = 'Loading...';
     loading.style.display = 'block';
   }
+  let appended = 0;
   try {
     let items = [];
     let cycleEnd = false;
@@ -873,7 +881,6 @@ async function loadGlobalPosts() {
     const batchHasNewPosts = items.some((item) =>
       item.kind !== 'ad' && !renderedFeedPostIds.has(String(item.id))
     );
-    let appended = 0;
     for (const item of items) {
       if (item.kind === 'ad') {
         if (batchHasNewPosts && !pendingFeedAd) pendingFeedAd = item;
@@ -909,8 +916,17 @@ async function loadGlobalPosts() {
     scheduleFeedRetry();
     return 0;
   } finally {
-    if (loading) loading.style.display = 'none';
     globalLoading = false;
+    // Never leave "Loading..." on screen when nothing was appended. An
+    // exhausted or recycled cycle is an idle state, not an in-flight request.
+    if (loading) {
+      if (appended > 0) {
+        loading.style.display = 'none';
+      } else {
+        loading.textContent = FEED_IDLE_MESSAGE;
+        loading.style.display = 'block';
+      }
+    }
   }
 }
 
