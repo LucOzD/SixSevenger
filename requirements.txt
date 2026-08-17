@@ -1,6 +1,5 @@
-Flask==3.1.3
-numpy==2.3.5
-scikit-learn==1.8.0
-scipy==1.17.1
-joblib==1.5.3
+# Only needed to regenerate Worker data files via the scripts in tools/:
+#   tools/gen_lexicon.py           -> worker/src/vader-lexicon.js
+#   tools/gen_sentiment_expected.py -> sentiment test fixture
+# The application itself is JavaScript and needs no Python at runtime.
 nltk==3.10.0
